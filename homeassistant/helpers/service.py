@@ -1,6 +1,5 @@
 """Service calling related helpers."""
 import asyncio
-import functools
 import logging
 # pylint: disable=unused-import
 from typing import Optional  # NOQA
@@ -10,11 +9,9 @@ import voluptuous as vol
 from homeassistant.const import ATTR_ENTITY_ID
 from homeassistant.core import HomeAssistant  # NOQA
 from homeassistant.exceptions import TemplateError
-from homeassistant.loader import get_component
+from homeassistant.loader import get_component, bind_hass
 import homeassistant.helpers.config_validation as cv
 from homeassistant.util.async import run_coroutine_threadsafe
-
-HASS = None  # type: Optional[HomeAssistant]
 
 CONF_SERVICE = 'service'
 CONF_SERVICE_TEMPLATE = 'service_template'
@@ -25,17 +22,7 @@ CONF_SERVICE_DATA_TEMPLATE = 'data_template'
 _LOGGER = logging.getLogger(__name__)
 
 
-def service(domain, service_name):
-    """Decorator factory to register a service."""
-    def register_service_decorator(action):
-        """Decorator to register a service."""
-        HASS.services.register(domain, service_name,
-                               functools.partial(action, HASS))
-        return action
-
-    return register_service_decorator
-
-
+@bind_hass
 def call_from_config(hass, config, blocking=False, variables=None,
                      validate_config=True):
     """Call a service based on a config hash."""
@@ -45,6 +32,7 @@ def call_from_config(hass, config, blocking=False, variables=None,
 
 
 @asyncio.coroutine
+@bind_hass
 def async_call_from_config(hass, config, blocking=False, variables=None,
                            validate_config=True):
     """Call a service based on a config hash."""
@@ -94,8 +82,9 @@ def async_call_from_config(hass, config, blocking=False, variables=None,
         domain, service_name, service_data, blocking)
 
 
+@bind_hass
 def extract_entity_ids(hass, service_call, expand_group=True):
-    """Helper method to extract a list of entity ids from a service call.
+    """Extract a list of entity ids from a service call.
 
     Will convert group entity ids to the entity ids it represents.
 

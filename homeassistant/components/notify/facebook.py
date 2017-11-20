@@ -6,14 +6,14 @@ https://home-assistant.io/components/notify.facebook/
 """
 import logging
 
+from aiohttp.hdrs import CONTENT_TYPE
 import requests
-
 import voluptuous as vol
 
-import homeassistant.helpers.config_validation as cv
 from homeassistant.components.notify import (
-    ATTR_TARGET, PLATFORM_SCHEMA, BaseNotificationService)
+    ATTR_DATA, ATTR_TARGET, PLATFORM_SCHEMA, BaseNotificationService)
 from homeassistant.const import CONTENT_TYPE_JSON
+import homeassistant.helpers.config_validation as cv
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -41,25 +41,41 @@ class FacebookNotificationService(BaseNotificationService):
         """Send some message."""
         payload = {'access_token': self.page_access_token}
         targets = kwargs.get(ATTR_TARGET)
+        data = kwargs.get(ATTR_DATA)
+
+        body_message = {"text": message}
+
+        if data is not None:
+            body_message.update(data)
+            # Only one of text or attachment can be specified
+            if 'attachment' in body_message:
+                body_message.pop('text')
 
         if not targets:
             _LOGGER.error("At least 1 target is required")
             return
 
         for target in targets:
+            # If the target starts with a "+", we suppose it's a phone number,
+            # otherwise it's a user id.
+            if target.startswith('+'):
+                recipient = {"phone_number": target}
+            else:
+                recipient = {"id": target}
+
             body = {
-                "recipient": {"phone_number": target},
-                "message": {"text": message}
+                "recipient": recipient,
+                "message": body_message
             }
             import json
             resp = requests.post(BASE_URL, data=json.dumps(body),
                                  params=payload,
-                                 headers={'Content-Type': CONTENT_TYPE_JSON},
+                                 headers={CONTENT_TYPE: CONTENT_TYPE_JSON},
                                  timeout=10)
             if resp.status_code != 200:
                 obj = resp.json()
                 error_message = obj['error']['message']
                 error_code = obj['error']['code']
-                _LOGGER.error("Error %s : %s (Code %s)", resp.status_code,
-                              error_message,
-                              error_code)
+                _LOGGER.error(
+                    "Error %s : %s (Code %s)", resp.status_code, error_message,
+                    error_code)

@@ -2,7 +2,7 @@
 import unittest
 from unittest.mock import patch
 
-from homeassistant import bootstrap
+from homeassistant import setup
 from homeassistant.components import frontend
 
 from tests.common import get_test_home_assistant
@@ -28,16 +28,16 @@ class TestPanelIframe(unittest.TestCase):
                 'url': 'not-a-url'}}]
 
         for conf in to_try:
-            assert not bootstrap.setup_component(
+            assert not setup.setup_component(
                 self.hass, 'panel_iframe', {
                     'panel_iframe': conf
                 })
 
-    @patch.dict('homeassistant.components.frontend.FINGERPRINTS', {
-        'panels/ha-panel-iframe.html': 'md5md5'})
+    @patch.dict('hass_frontend_es5.FINGERPRINTS',
+                {'iframe': 'md5md5'})
     def test_correct_config(self):
         """Test correct config."""
-        assert bootstrap.setup_component(
+        assert setup.setup_component(
             self.hass, 'panel_iframe', {
                 'panel_iframe': {
                     'router': {
@@ -53,22 +53,22 @@ class TestPanelIframe(unittest.TestCase):
                 },
             })
 
-        # 5 dev tools + map are automatically loaded + 2 iframe panels
-        assert len(self.hass.data[frontend.DATA_PANELS]) == 8
-        assert self.hass.data[frontend.DATA_PANELS]['router'] == {
+        panels = self.hass.data[frontend.DATA_PANELS]
+
+        assert panels.get('router').to_response(self.hass, None) == {
             'component_name': 'iframe',
             'config': {'url': 'http://192.168.1.1'},
             'icon': 'mdi:network-wireless',
             'title': 'Router',
-            'url': '/frontend/panels/iframe-md5md5.html',
+            'url': '/frontend_es5/panels/ha-panel-iframe-md5md5.html',
             'url_path': 'router'
         }
 
-        assert self.hass.data[frontend.DATA_PANELS]['weather'] == {
+        assert panels.get('weather').to_response(self.hass, None) == {
             'component_name': 'iframe',
             'config': {'url': 'https://www.wunderground.com/us/ca/san-diego'},
             'icon': 'mdi:weather',
             'title': 'Weather',
-            'url': '/frontend/panels/iframe-md5md5.html',
+            'url': '/frontend_es5/panels/ha-panel-iframe-md5md5.html',
             'url_path': 'weather',
         }

@@ -1,46 +1,44 @@
 """The tests for the emulated Hue component."""
 import asyncio
 import json
-
 from unittest.mock import patch
-import pytest
 
-from homeassistant import bootstrap, const, core
+from aiohttp.hdrs import CONTENT_TYPE
+import pytest
+from tests.common import get_test_instance_port
+
+from homeassistant import core, const, setup
 import homeassistant.components as core_components
 from homeassistant.components import (
-    emulated_hue, http, light, script, media_player
-)
-from homeassistant.const import STATE_ON, STATE_OFF
-from homeassistant.components.emulated_hue.hue_api import (
-    HUE_API_STATE_ON, HUE_API_STATE_BRI, HueUsernameView,
-    HueAllLightsStateView, HueOneLightStateView, HueOneLightChangeView)
+    fan, http, light, script, emulated_hue, media_player)
 from homeassistant.components.emulated_hue import Config
-
-from tests.common import (
-    get_test_instance_port, mock_http_component_app)
+from homeassistant.components.emulated_hue.hue_api import (
+    HUE_API_STATE_ON, HUE_API_STATE_BRI, HueUsernameView, HueOneLightStateView,
+    HueAllLightsStateView, HueOneLightChangeView)
+from homeassistant.const import STATE_ON, STATE_OFF
 
 HTTP_SERVER_PORT = get_test_instance_port()
 BRIDGE_SERVER_PORT = get_test_instance_port()
 
 BRIDGE_URL_BASE = 'http://127.0.0.1:{}'.format(BRIDGE_SERVER_PORT) + '{}'
-JSON_HEADERS = {const.HTTP_HEADER_CONTENT_TYPE: const.CONTENT_TYPE_JSON}
+JSON_HEADERS = {CONTENT_TYPE: const.CONTENT_TYPE_JSON}
 
 
 @pytest.fixture
 def hass_hue(loop, hass):
-    """Setup a hass instance for these tests."""
+    """Setup a Home Assistant instance for these tests."""
     # We need to do this to get access to homeassistant/turn_(on,off)
     loop.run_until_complete(
         core_components.async_setup(hass, {core.DOMAIN: {}}))
 
-    loop.run_until_complete(bootstrap.async_setup_component(
+    loop.run_until_complete(setup.async_setup_component(
         hass, http.DOMAIN,
         {http.DOMAIN: {http.CONF_SERVER_PORT: HTTP_SERVER_PORT}}))
 
     with patch('homeassistant.components'
                '.emulated_hue.UPNPResponderThread'):
         loop.run_until_complete(
-            bootstrap.async_setup_component(hass, emulated_hue.DOMAIN, {
+            setup.async_setup_component(hass, emulated_hue.DOMAIN, {
                 emulated_hue.DOMAIN: {
                     emulated_hue.CONF_LISTEN_PORT: BRIDGE_SERVER_PORT,
                     emulated_hue.CONF_EXPOSE_BY_DEFAULT: True
@@ -48,7 +46,7 @@ def hass_hue(loop, hass):
             }))
 
     loop.run_until_complete(
-        bootstrap.async_setup_component(hass, light.DOMAIN, {
+        setup.async_setup_component(hass, light.DOMAIN, {
             'light': [
                 {
                     'platform': 'demo',
@@ -57,7 +55,7 @@ def hass_hue(loop, hass):
         }))
 
     loop.run_until_complete(
-        bootstrap.async_setup_component(hass, script.DOMAIN, {
+        setup.async_setup_component(hass, script.DOMAIN, {
             'script': {
                 'set_kitchen_light': {
                     'sequence': [
@@ -75,8 +73,17 @@ def hass_hue(loop, hass):
         }))
 
     loop.run_until_complete(
-        bootstrap.async_setup_component(hass, media_player.DOMAIN, {
+        setup.async_setup_component(hass, media_player.DOMAIN, {
             'media_player': [
+                {
+                    'platform': 'demo',
+                }
+            ]
+        }))
+
+    loop.run_until_complete(
+        setup.async_setup_component(hass, fan.DOMAIN, {
+            'fan': [
                 {
                     'platform': 'demo',
                 }
@@ -89,6 +96,14 @@ def hass_hue(loop, hass):
     attrs[emulated_hue.ATTR_EMULATED_HUE] = False
     hass.states.async_set(
         kitchen_light_entity.entity_id, kitchen_light_entity.state,
+        attributes=attrs)
+
+    # Ceiling Fan is explicitly excluded from being exposed
+    ceiling_fan_entity = hass.states.get('fan.ceiling_fan')
+    attrs = dict(ceiling_fan_entity.attributes)
+    attrs[emulated_hue.ATTR_EMULATED_HUE_HIDDEN] = True
+    hass.states.async_set(
+        ceiling_fan_entity.entity_id, ceiling_fan_entity.state,
         attributes=attrs)
 
     # Expose the script
@@ -105,8 +120,8 @@ def hass_hue(loop, hass):
 @pytest.fixture
 def hue_client(loop, hass_hue, test_client):
     """Create web client for emulated hue api."""
-    web_app = mock_http_component_app(hass_hue)
-    config = Config({'type': 'alexa'})
+    web_app = hass_hue.http.app
+    config = Config(None, {'type': 'alexa'})
 
     HueUsernameView().register(web_app.router)
     HueAllLightsStateView(config).register(web_app.router)
@@ -137,6 +152,8 @@ def test_discover_lights(hue_client):
     assert 'media_player.bedroom' in devices
     assert 'media_player.walkman' in devices
     assert 'media_player.lounge_room' in devices
+    assert 'fan.living_room_fan' in devices
+    assert 'fan.ceiling_fan' not in devices
 
 
 @asyncio.coroutine
@@ -279,6 +296,33 @@ def test_put_light_state_media_player(hass_hue, hue_client):
     walkman = hass_hue.states.get('media_player.walkman')
     assert walkman.state == 'playing'
     assert walkman.attributes[media_player.ATTR_MEDIA_VOLUME_LEVEL] == level
+
+
+@asyncio.coroutine
+def test_put_light_state_fan(hass_hue, hue_client):
+    """Test turning on fan and setting speed."""
+    # Turn the fan off first
+    yield from hass_hue.services.async_call(
+        fan.DOMAIN, const.SERVICE_TURN_OFF,
+        {const.ATTR_ENTITY_ID: 'fan.living_room_fan'},
+        blocking=True)
+
+    # Emulated hue converts 0-100% to 0-255.
+    level = 43
+    brightness = round(level * 255 / 100)
+
+    fan_result = yield from perform_put_light_state(
+        hass_hue, hue_client,
+        'fan.living_room_fan', True, brightness)
+
+    fan_result_json = yield from fan_result.json()
+
+    assert fan_result.status == 200
+    assert len(fan_result_json) == 2
+
+    living_room_fan = hass_hue.states.get('fan.living_room_fan')
+    assert living_room_fan.state == 'on'
+    assert living_room_fan.attributes[fan.ATTR_SPEED] == fan.SPEED_MEDIUM
 
 
 # pylint: disable=invalid-name

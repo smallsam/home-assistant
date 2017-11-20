@@ -6,10 +6,12 @@ import shutil
 import homeassistant.components.tts as tts
 from homeassistant.components.media_player import (
     SERVICE_PLAY_MEDIA, ATTR_MEDIA_CONTENT_ID, DOMAIN as DOMAIN_MP)
-from homeassistant.bootstrap import setup_component
+from homeassistant.setup import setup_component
 
 from tests.common import (
     get_test_home_assistant, assert_setup_component, mock_service)
+
+from .test_init import mutagen_mock  # noqa
 
 
 class TestTTSVoiceRSSPlatform(object):

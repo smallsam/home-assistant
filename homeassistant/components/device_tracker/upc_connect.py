@@ -6,37 +6,36 @@ https://home-assistant.io/components/device_tracker.upc_connect/
 """
 import asyncio
 import logging
-import xml.etree.ElementTree as ET
 
 import aiohttp
+from aiohttp.hdrs import REFERER, USER_AGENT
 import async_timeout
 import voluptuous as vol
 
-import homeassistant.helpers.config_validation as cv
 from homeassistant.components.device_tracker import (
     DOMAIN, PLATFORM_SCHEMA, DeviceScanner)
-from homeassistant.const import CONF_HOST, CONF_PASSWORD
-from homeassistant.helpers.aiohttp_client import async_create_clientsession
+from homeassistant.const import CONF_HOST, HTTP_HEADER_X_REQUESTED_WITH
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
+import homeassistant.helpers.config_validation as cv
 
+REQUIREMENTS = ['defusedxml==0.5.0']
 
 _LOGGER = logging.getLogger(__name__)
+
+CMD_DEVICES = 123
 
 DEFAULT_IP = '192.168.0.1'
 
 PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
-    vol.Required(CONF_PASSWORD): cv.string,
     vol.Optional(CONF_HOST, default=DEFAULT_IP): cv.string,
 })
-
-CMD_LOGIN = 15
-CMD_DEVICES = 123
 
 
 @asyncio.coroutine
 def async_get_scanner(hass, config):
     """Return the UPC device scanner."""
     scanner = UPCDeviceScanner(hass, config[DOMAIN])
-    success_init = yield from scanner.async_login()
+    success_init = yield from scanner.async_initialize_token()
 
     return scanner if success_init else None
 
@@ -48,28 +47,28 @@ class UPCDeviceScanner(DeviceScanner):
         """Initialize the scanner."""
         self.hass = hass
         self.host = config[CONF_HOST]
-        self.password = config[CONF_PASSWORD]
 
         self.data = {}
         self.token = None
 
         self.headers = {
-            'X-Requested-With': 'XMLHttpRequest',
-            'Referer': "http://{}/index.html".format(self.host),
-            'User-Agent': ("Mozilla/5.0 (Windows NT 10.0; WOW64) "
-                           "AppleWebKit/537.36 (KHTML, like Gecko) "
-                           "Chrome/47.0.2526.106 Safari/537.36")
+            HTTP_HEADER_X_REQUESTED_WITH: 'XMLHttpRequest',
+            REFERER: "http://{}/index.html".format(self.host),
+            USER_AGENT: ("Mozilla/5.0 (Windows NT 10.0; WOW64) "
+                         "AppleWebKit/537.36 (KHTML, like Gecko) "
+                         "Chrome/47.0.2526.106 Safari/537.36")
         }
 
-        self.websession = async_create_clientsession(
-            hass, cookie_jar=aiohttp.CookieJar(unsafe=True, loop=hass.loop))
+        self.websession = async_get_clientsession(hass)
 
     @asyncio.coroutine
     def async_scan_devices(self):
         """Scan for new devices and return a list with found device IDs."""
+        import defusedxml.ElementTree as ET
+
         if self.token is None:
-            reconnect = yield from self.async_login()
-            if not reconnect:
+            token_initialized = yield from self.async_initialize_token()
+            if not token_initialized:
                 _LOGGER.error("Not connected to %s", self.host)
                 return []
 
@@ -81,8 +80,7 @@ class UPCDeviceScanner(DeviceScanner):
         except (ET.ParseError, TypeError):
             _LOGGER.warning("Can't read device from %s", self.host)
             self.token = None
-
-        return []
+            return []
 
     @asyncio.coroutine
     def async_get_device_name(self, device):
@@ -90,75 +88,47 @@ class UPCDeviceScanner(DeviceScanner):
         return None
 
     @asyncio.coroutine
-    def async_login(self):
-        """Login into firmware and get first token."""
-        response = None
+    def async_initialize_token(self):
+        """Get first token."""
         try:
             # get first token
             with async_timeout.timeout(10, loop=self.hass.loop):
                 response = yield from self.websession.get(
-                    "http://{}/common_page/login.html".format(self.host)
-                )
+                    "http://{}/common_page/login.html".format(self.host),
+                    headers=self.headers)
 
-            yield from response.text()
+                yield from response.text()
+
             self.token = response.cookies['sessionToken'].value
 
-            # login
-            data = yield from self._async_ws_function(CMD_LOGIN, {
-                'Username': 'NULL',
-                'Password': self.password,
-            })
+            return True
 
-            # successfull?
-            if data is not None:
-                return True
-            return False
-
-        except (asyncio.TimeoutError, aiohttp.errors.ClientError):
+        except (asyncio.TimeoutError, aiohttp.ClientError):
             _LOGGER.error("Can not load login page from %s", self.host)
             return False
 
-        finally:
-            if response is not None:
-                yield from response.release()
-
     @asyncio.coroutine
-    def _async_ws_function(self, function, additional_form=None):
+    def _async_ws_function(self, function):
         """Execute a command on UPC firmware webservice."""
-        form_data = {
-            'token': self.token,
-            'fun': function
-        }
-
-        if additional_form:
-            form_data.update(additional_form)
-
-        response = None
         try:
             with async_timeout.timeout(10, loop=self.hass.loop):
+                # The 'token' parameter has to be first, and 'fun' second
+                # or the UPC firmware will return an error
                 response = yield from self.websession.post(
                     "http://{}/xml/getter.xml".format(self.host),
-                    data=form_data,
-                    headers=self.headers
-                )
+                    data="token={}&fun={}".format(self.token, function),
+                    headers=self.headers, allow_redirects=False)
 
-                # error on UPC webservice
+                # Error?
                 if response.status != 200:
-                    _LOGGER.warning(
-                        "Error %d on %s.", response.status, function)
+                    _LOGGER.warning("Receive http code %d", response.status)
                     self.token = None
                     return
 
-                # load data, store token for next request
-                raw = yield from response.text()
+                # Load data, store token for next request
                 self.token = response.cookies['sessionToken'].value
+                return (yield from response.text())
 
-                return raw
-
-        except (asyncio.TimeoutError, aiohttp.errors.ClientError):
+        except (asyncio.TimeoutError, aiohttp.ClientError):
             _LOGGER.error("Error on %s", function)
             self.token = None
-
-        finally:
-            if response is not None:
-                yield from response.release()

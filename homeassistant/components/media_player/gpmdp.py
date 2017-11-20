@@ -6,7 +6,6 @@ https://home-assistant.io/components/media_player.gpmdp/
 """
 import logging
 import json
-import os
 import socket
 import time
 
@@ -18,8 +17,8 @@ from homeassistant.components.media_player import (
     MediaPlayerDevice, PLATFORM_SCHEMA)
 from homeassistant.const import (
     STATE_PLAYING, STATE_PAUSED, STATE_OFF, CONF_HOST, CONF_PORT, CONF_NAME)
-from homeassistant.loader import get_component
 import homeassistant.helpers.config_validation as cv
+from homeassistant.util.json import load_json, save_json
 
 REQUIREMENTS = ['websocket-client==0.37.0']
 
@@ -48,7 +47,7 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
 
 def request_configuration(hass, config, url, add_devices_callback):
     """Request configuration steps from the user."""
-    configurator = get_component('configurator')
+    configurator = hass.components.configurator
     if 'gpmdp' in _CONFIGURING:
         configurator.notify_errors(
             _CONFIGURING['gpmdp'], "Failed to register, please try again.")
@@ -62,7 +61,7 @@ def request_configuration(hass, config, url, add_devices_callback):
 
     # pylint: disable=unused-argument
     def gpmdp_configuration_callback(callback_data):
-        """The actions to do when our configuration callback is called."""
+        """Handle configuration changes."""
         while True:
             from websocket import _exceptions
             try:
@@ -79,16 +78,15 @@ def request_configuration(hass, config, url, add_devices_callback):
                                        'arguments': ['Home Assistant', pin]}))
             tmpmsg = json.loads(websocket.recv())
             if tmpmsg['channel'] == 'time':
-                _LOGGER.error('Error setting up GPMDP. Please pause'
-                              ' the desktop player and try again.')
+                _LOGGER.error("Error setting up GPMDP. Please pause "
+                              "the desktop player and try again")
                 break
             code = tmpmsg['payload']
             if code == 'CODE_REQUIRED':
                 continue
             setup_gpmdp(hass, config, code,
                         add_devices_callback)
-            _save_config(hass.config.path(GPMDP_CONFIG_FILE),
-                         {"CODE": code})
+            save_json(hass.config.path(GPMDP_CONFIG_FILE), {"CODE": code})
             websocket.send(json.dumps({'namespace': 'connect',
                                        'method': 'connect',
                                        'arguments': ['Home Assistant', code]}))
@@ -96,7 +94,7 @@ def request_configuration(hass, config, url, add_devices_callback):
             break
 
     _CONFIGURING['gpmdp'] = configurator.request_config(
-        hass, DEFAULT_NAME, gpmdp_configuration_callback,
+        DEFAULT_NAME, gpmdp_configuration_callback,
         description=(
             'Enter the pin that is displayed in the '
             'Google Play Music Desktop Player.'),
@@ -106,7 +104,7 @@ def request_configuration(hass, config, url, add_devices_callback):
 
 
 def setup_gpmdp(hass, config, code, add_devices):
-    """Setup gpmdp."""
+    """Set up gpmdp."""
     name = config.get(CONF_NAME)
     host = config.get(CONF_HOST)
     port = config.get(CONF_PORT)
@@ -117,46 +115,16 @@ def setup_gpmdp(hass, config, code, add_devices):
         return
 
     if 'gpmdp' in _CONFIGURING:
-        configurator = get_component('configurator')
+        configurator = hass.components.configurator
         configurator.request_done(_CONFIGURING.pop('gpmdp'))
 
-    add_devices([GPMDP(name, url, code)])
+    add_devices([GPMDP(name, url, code)], True)
 
 
-def _load_config(filename):
-    """Load configuration."""
-    if not os.path.isfile(filename):
-        return {}
-
-    try:
-        with open(filename, 'r') as fdesc:
-            inp = fdesc.read()
-
-        # In case empty file
-        if not inp:
-            return {}
-
-        return json.loads(inp)
-    except (IOError, ValueError) as error:
-        _LOGGER.error("Reading config file %s failed: %s", filename, error)
-        return None
-
-
-def _save_config(filename, config):
-    """Save configuration."""
-    try:
-        with open(filename, 'w') as fdesc:
-            fdesc.write(json.dumps(config, indent=4, sort_keys=True))
-    except (IOError, TypeError) as error:
-        _LOGGER.error("Saving configuration file failed: %s", error)
-        return False
-    return True
-
-
-def setup_platform(hass, config, add_devices_callback, discovery_info=None):
-    """Setup the GPMDP platform."""
-    codeconfig = _load_config(hass.config.path(GPMDP_CONFIG_FILE))
-    if len(codeconfig):
+def setup_platform(hass, config, add_devices, discovery_info=None):
+    """Set up the GPMDP platform."""
+    codeconfig = load_json(hass.config.path(GPMDP_CONFIG_FILE))
+    if codeconfig:
         code = codeconfig.get('CODE')
     elif discovery_info is not None:
         if 'gpmdp' in _CONFIGURING:
@@ -164,7 +132,7 @@ def setup_platform(hass, config, add_devices_callback, discovery_info=None):
         code = None
     else:
         code = None
-    setup_gpmdp(hass, config, code, add_devices_callback)
+    setup_gpmdp(hass, config, code, add_devices)
 
 
 class GPMDP(MediaPlayerDevice):
@@ -186,7 +154,6 @@ class GPMDP(MediaPlayerDevice):
         self._duration = None
         self._volume = None
         self._request_id = 0
-        self.update()
 
     def get_ws(self):
         """Check if the websocket is setup and connected."""
@@ -295,8 +262,8 @@ class GPMDP(MediaPlayerDevice):
         return self._name
 
     @property
-    def supported_media_commands(self):
-        """Flag of media commands that are supported."""
+    def supported_features(self):
+        """Flag media player features that are supported."""
         return SUPPORT_GPMDP
 
     def media_next_track(self):
@@ -311,13 +278,13 @@ class GPMDP(MediaPlayerDevice):
         """Send media_play command to media player."""
         self.send_gpmdp_msg('playback', 'playPause', False)
         self._status = STATE_PLAYING
-        self.update_ha_state()
+        self.schedule_update_ha_state()
 
     def media_pause(self):
         """Send media_pause command to media player."""
         self.send_gpmdp_msg('playback', 'playPause', False)
         self._status = STATE_PAUSED
-        self.update_ha_state()
+        self.schedule_update_ha_state()
 
     def media_seek(self, position):
         """Send media_seek command to media player."""
@@ -327,7 +294,7 @@ class GPMDP(MediaPlayerDevice):
         websocket.send(json.dumps({'namespace': 'playback',
                                    'method': 'setCurrentTime',
                                    'arguments': [position*1000]}))
-        self.update_ha_state()
+        self.schedule_update_ha_state()
 
     def volume_up(self):
         """Send volume_up command to media player."""
@@ -335,7 +302,7 @@ class GPMDP(MediaPlayerDevice):
         if websocket is None:
             return
         websocket.send('{"namespace": "volume", "method": "increaseVolume"}')
-        self.update_ha_state()
+        self.schedule_update_ha_state()
 
     def volume_down(self):
         """Send volume_down command to media player."""
@@ -343,7 +310,7 @@ class GPMDP(MediaPlayerDevice):
         if websocket is None:
             return
         websocket.send('{"namespace": "volume", "method": "decreaseVolume"}')
-        self.update_ha_state()
+        self.schedule_update_ha_state()
 
     def set_volume_level(self, volume):
         """Set volume on media player, range(0..1)."""
@@ -353,4 +320,4 @@ class GPMDP(MediaPlayerDevice):
         websocket.send(json.dumps({'namespace': 'volume',
                                    'method': 'setVolume',
                                    'arguments': [volume*100]}))
-        self.update_ha_state()
+        self.schedule_update_ha_state()

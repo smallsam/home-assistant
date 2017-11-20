@@ -22,6 +22,9 @@ U = TypeVar('U')
 RE_SANITIZE_FILENAME = re.compile(r'(~|\.\.|/|\\)')
 RE_SANITIZE_PATH = re.compile(r'(~|\.(\.)+)')
 RE_SLUGIFY = re.compile(r'[^a-z0-9_]+')
+TBL_SLUGIFY = {
+    ord('ß'): 'ss'
+}
 
 
 def sanitize_filename(filename: str) -> str:
@@ -36,9 +39,13 @@ def sanitize_path(path: str) -> str:
 
 def slugify(text: str) -> str:
     """Slugify a given text."""
-    text = normalize('NFKD', text).lower().replace(" ", "_")
+    text = normalize('NFKD', text)
+    text = text.lower()
+    text = text.replace(" ", "_")
+    text = text.translate(TBL_SLUGIFY)
+    text = RE_SLUGIFY.sub("", text)
 
-    return RE_SLUGIFY.sub("", text)
+    return text
 
 
 def repr_helper(inp: Any) -> str:
@@ -49,8 +56,8 @@ def repr_helper(inp: Any) -> str:
             in inp.items())
     elif isinstance(inp, datetime):
         return as_local(inp).isoformat()
-    else:
-        return str(inp)
+
+    return str(inp)
 
 
 def convert(value: T, to_type: Callable[[T], U],
@@ -92,7 +99,10 @@ def get_local_ip():
 
         return sock.getsockname()[0]
     except socket.error:
-        return socket.gethostbyname(socket.gethostname())
+        try:
+            return socket.gethostbyname(socket.gethostname())
+        except socket.gaierror:
+            return '127.0.0.1'
     finally:
         sock.close()
 
@@ -178,7 +188,7 @@ class OrderedSet(MutableSet):
             next_item[1] = prev_item
 
     def __iter__(self):
-        """Iteration of the set."""
+        """Iterate of the set."""
         end = self.end
         curr = end[2]
         while curr is not end:
@@ -258,7 +268,7 @@ class Throttle(object):
 
         # We want to be able to differentiate between function and unbound
         # methods (which are considered functions).
-        # All methods have the classname in their qualname seperated by a '.'
+        # All methods have the classname in their qualname separated by a '.'
         # Functions have a '.' in their qualname if defined inline, but will
         # be prefixed by '.<locals>.' so we strip that out.
         is_func = (not hasattr(method, '__self__') and
@@ -266,7 +276,7 @@ class Throttle(object):
 
         @wraps(method)
         def wrapper(*args, **kwargs):
-            """Wrapper that allows wrapped to be called only once per min_time.
+            """Wrap that allows wrapped to be called only once per min_time.
 
             If we cannot acquire the lock, it is running so return None.
             """
@@ -296,8 +306,8 @@ class Throttle(object):
                     result = method(*args, **kwargs)
                     throttle[1] = utcnow()
                     return result
-                else:
-                    return None
+
+                return None
             finally:
                 throttle[0].release()
 

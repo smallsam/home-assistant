@@ -89,7 +89,7 @@ class QSToggleEntity(object):
         if value != self._value:
             self._value = value
             # pylint: disable=no-member
-            super().update_ha_state()  # Part of Entity/ToggleEntity
+            super().schedule_update_ha_state()  # Part of Entity/ToggleEntity
         return self._value
 
     def turn_on(self, **kwargs):
@@ -123,7 +123,7 @@ class QSLight(QSToggleEntity, Light):
 
 
 def setup(hass, config):
-    """Setup the QSUSB component."""
+    """Set up the QSUSB component."""
     from pyqwikswitch import (
         QSUsb, CMD_BUTTONS, QS_NAME, QS_ID, QS_CMD, PQS_VALUE, PQS_TYPE,
         QSType)
@@ -165,13 +165,13 @@ def setup(hass, config):
 
     # Load platforms
     for comp_name in ('switch', 'light'):
-        if len(QSUSB[comp_name]) > 0:
+        if QSUSB[comp_name]:
             load_platform(hass, comp_name, 'qwikswitch', {}, config)
 
     def qs_callback(item):
         """Typically a button press or update signal."""
         if qsusb is None:  # Shutting down
-            _LOGGER.info("Done")
+            _LOGGER.info("Botton press or updating signal done")
             return
 
         # If button pressed, fire a hass event
@@ -183,10 +183,10 @@ def setup(hass, config):
         qsreply = qsusb.devices()
         if qsreply is False:
             return
-        for item in qsreply:
-            if item[QS_ID] in QSUSB:
-                QSUSB[item[QS_ID]].update_value(
-                    round(min(item[PQS_VALUE], 100) * 2.55))
+        for itm in qsreply:
+            if itm[QS_ID] in QSUSB:
+                QSUSB[itm[QS_ID]].update_value(
+                    round(min(itm[PQS_VALUE], 100) * 2.55))
 
     def _start(event):
         """Start listening."""

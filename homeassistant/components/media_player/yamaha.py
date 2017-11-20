@@ -18,7 +18,7 @@ from homeassistant.const import (CONF_NAME, CONF_HOST, STATE_OFF, STATE_ON,
                                  STATE_PLAYING, STATE_IDLE)
 import homeassistant.helpers.config_validation as cv
 
-REQUIREMENTS = ['rxv==0.4.0']
+REQUIREMENTS = ['rxv==0.5.1']
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -44,7 +44,7 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
 
 
 def setup_platform(hass, config, add_devices, discovery_info=None):
-    """Setup the Yamaha platform."""
+    """Set up the Yamaha platform."""
     import rxv
     # keep track of configured receivers so that we don't end up
     # discovering a receiver dynamically that we have static config
@@ -59,17 +59,15 @@ def setup_platform(hass, config, add_devices, discovery_info=None):
     zone_ignore = config.get(CONF_ZONE_IGNORE)
 
     if discovery_info is not None:
-        name = discovery_info[0]
-        model = discovery_info[1]
-        ctrl_url = discovery_info[2]
-        desc_url = discovery_info[3]
+        name = discovery_info.get('name')
+        model = discovery_info.get('model_name')
+        ctrl_url = discovery_info.get('control_url')
+        desc_url = discovery_info.get('description_url')
         if ctrl_url in hass.data[KNOWN]:
             _LOGGER.info("%s already manually configured", ctrl_url)
             return
         receivers = rxv.RXV(
-            ctrl_url,
-            model_name=model,
-            friendly_name=name,
+            ctrl_url, model_name=model, friendly_name=name,
             unit_desc_url=desc_url).zone_controllers()
         _LOGGER.info("Receivers: %s", receivers)
         # when we are dynamically discovered config is empty
@@ -86,7 +84,8 @@ def setup_platform(hass, config, add_devices, discovery_info=None):
         if receiver.zone not in zone_ignore:
             hass.data[KNOWN].add(receiver.ctrl_url)
             add_devices([
-                YamahaDevice(name, receiver, source_ignore, source_names)])
+                YamahaDevice(name, receiver, source_ignore, source_names)
+            ], True)
 
 
 class YamahaDevice(MediaPlayerDevice):
@@ -106,7 +105,6 @@ class YamahaDevice(MediaPlayerDevice):
         self._playback_support = None
         self._is_playback_supported = False
         self._play_status = None
-        self.update()
         self._name = name
         self._zone = receiver.zone
 
@@ -181,9 +179,9 @@ class YamahaDevice(MediaPlayerDevice):
         return self._source_list
 
     @property
-    def supported_media_commands(self):
-        """Flag of media commands that are supported."""
-        supported_commands = SUPPORT_YAMAHA
+    def supported_features(self):
+        """Flag media player features that are supported."""
+        supported_features = SUPPORT_YAMAHA
 
         supports = self._playback_support
         mapping = {'play': (SUPPORT_PLAY | SUPPORT_PLAY_MEDIA),
@@ -193,8 +191,8 @@ class YamahaDevice(MediaPlayerDevice):
                    'skip_r': SUPPORT_PREVIOUS_TRACK}
         for attr, feature in mapping.items():
             if getattr(supports, attr, False):
-                supported_commands |= feature
-        return supported_commands
+                supported_features |= feature
+        return supported_features
 
     def turn_off(self):
         """Turn off media player."""
@@ -216,7 +214,7 @@ class YamahaDevice(MediaPlayerDevice):
         self._volume = (self._receiver.volume / 100) + 1
 
     def media_play(self):
-        """Send play commmand."""
+        """Send play command."""
         self._call_playback_function(self._receiver.play, "play")
 
     def media_pause(self):
@@ -241,7 +239,7 @@ class YamahaDevice(MediaPlayerDevice):
             function()
         except rxv.exceptions.ResponseException:
             _LOGGER.warning(
-                'Failed to execute %s on %s', function_text, self._name)
+                "Failed to execute %s on %s", function_text, self._name)
 
     def select_source(self, source):
         """Select input source."""
@@ -254,6 +252,20 @@ class YamahaDevice(MediaPlayerDevice):
         Yamaha to direct play certain kinds of media. media_type is
         treated as the input type that we are setting, and media id is
         specific to it.
+
+        For the NET RADIO mediatype the format for ``media_id`` is a
+        "path" in your vtuner hierarchy. For instance:
+        ``Bookmarks>Internet>Radio Paradise``. The separators are
+        ``>`` and the parts of this are navigated by name behind the
+        scenes. There is a looping construct built into the yamaha
+        library to do this with a fallback timeout if the vtuner
+        service is unresponsive.
+
+        NOTE: this might take a while, because the only API interface
+        for setting the net radio station emulates button pressing and
+        navigating through the net radio menu hiearchy. And each sub
+        menu must be fetched by the receiver from the vtuner service.
+
         """
         if media_type == "NET RADIO":
             self._receiver.net_radio(media_id)
@@ -289,5 +301,5 @@ class YamahaDevice(MediaPlayerDevice):
             # just the one we have.
             if song and station:
                 return '{}: {}'.format(station, song)
-            else:
-                return song or station
+
+            return song or station

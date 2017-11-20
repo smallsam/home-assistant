@@ -4,12 +4,13 @@ Provides methods for loading Home Assistant components.
 This module has quite some complex parts. I have tried to add as much
 documentation as possible to keep it understandable.
 
-Components are loaded by calling get_component('switch') from your code.
+Components can be accessed via hass.components.switch from your code.
 If you want to retrieve a platform that is part of a component, you should
 call get_component('switch.your_platform'). In both cases the config directory
 is checked to see if it contains a user provided version. If not available it
 will check the built-in components and platforms.
 """
+import functools as ft
 import importlib
 import logging
 import os
@@ -29,6 +30,8 @@ if False:
     from homeassistant.core import HomeAssistant  # NOQA
 
 PREPARED = False
+
+DEPENDENCY_BLACKLIST = set(('config',))
 
 # List of available components
 AVAILABLE_COMPONENTS = []  # type: List[str]
@@ -168,36 +171,63 @@ def get_component(comp_name) -> Optional[ModuleType]:
     return None
 
 
-def load_order_components(components: Sequence[str]) -> OrderedSet:
-    """Take in a list of components we want to load.
+class Components:
+    """Helper to load components."""
 
-    - filters out components we cannot load
-    - filters out components that have invalid/circular dependencies
-    - Will make sure the recorder component is loaded first
-    - Will ensure that all components that do not directly depend on
-      the group component will be loaded before the group component.
-    - returns an OrderedSet load order.
+    def __init__(self, hass):
+        """Initialize the Components class."""
+        self._hass = hass
 
-    Async friendly.
-    """
-    _check_prepared()
+    def __getattr__(self, comp_name):
+        """Fetch a component."""
+        component = get_component(comp_name)
+        if component is None:
+            raise ImportError('Unable to load {}'.format(comp_name))
+        wrapped = ModuleWrapper(self._hass, component)
+        setattr(self, comp_name, wrapped)
+        return wrapped
 
-    load_order = OrderedSet()
 
-    # Sort the list of modules on if they depend on group component or not.
-    # Components that do not depend on the group usually set up states.
-    # Components that depend on group usually use states in their setup.
-    for comp_load_order in sorted((load_order_component(component)
-                                   for component in components),
-                                  key=lambda order: 'group' in order):
-        load_order.update(comp_load_order)
+class Helpers:
+    """Helper to load helpers."""
 
-    # Push some to first place in load order
-    for comp in ('logger', 'recorder', 'introduction'):
-        if comp in load_order:
-            load_order.promote(comp)
+    def __init__(self, hass):
+        """Initialize the Helpers class."""
+        self._hass = hass
 
-    return load_order
+    def __getattr__(self, helper_name):
+        """Fetch a helper."""
+        helper = importlib.import_module(
+            'homeassistant.helpers.{}'.format(helper_name))
+        wrapped = ModuleWrapper(self._hass, helper)
+        setattr(self, helper_name, wrapped)
+        return wrapped
+
+
+class ModuleWrapper:
+    """Class to wrap a Python module and auto fill in hass argument."""
+
+    def __init__(self, hass, module):
+        """Initialize the module wrapper."""
+        self._hass = hass
+        self._module = module
+
+    def __getattr__(self, attr):
+        """Fetch an attribute."""
+        value = getattr(self._module, attr)
+
+        if hasattr(value, '__bind_hass'):
+            value = ft.partial(value, self._hass)
+
+        setattr(self, attr, value)
+        return value
+
+
+def bind_hass(func):
+    """Decorator to indicate that first argument is hass."""
+    # pylint: disable=protected-access
+    func.__bind_hass = True
+    return func
 
 
 def load_order_component(comp_name: str) -> OrderedSet:
@@ -232,15 +262,15 @@ def _load_order_component(comp_name: str, load_order: OrderedSet,
 
         # If we are already loading it, we have a circular dependency.
         if dependency in loading:
-            _LOGGER.error('Circular dependency detected: %s -> %s',
+            _LOGGER.error("Circular dependency detected: %s -> %s",
                           comp_name, dependency)
             return OrderedSet()
 
         dep_load_order = _load_order_component(dependency, load_order, loading)
 
         # length == 0 means error loading dependency or children
-        if len(dep_load_order) == 0:
-            _LOGGER.error('Error loading %s dependency: %s',
+        if not dep_load_order:
+            _LOGGER.error("Error loading %s dependency: %s",
                           comp_name, dependency)
             return OrderedSet()
 

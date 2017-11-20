@@ -5,44 +5,49 @@ For more details about this component, please refer to the documentation at
 https://home-assistant.io/components/http/
 """
 import asyncio
+from functools import wraps
+from ipaddress import ip_network
 import json
 import logging
-import ssl
-from ipaddress import ip_network
-from pathlib import Path
-
 import os
-import voluptuous as vol
-from aiohttp import web
-from aiohttp.web_exceptions import HTTPUnauthorized, HTTPMovedPermanently
+import ssl
 
+from aiohttp import web
+from aiohttp.hdrs import ACCEPT, ORIGIN, CONTENT_TYPE
+from aiohttp.web_exceptions import HTTPUnauthorized, HTTPMovedPermanently
+import voluptuous as vol
+
+from homeassistant.const import (
+    SERVER_PORT, CONTENT_TYPE_JSON, HTTP_HEADER_HA_AUTH,
+    EVENT_HOMEASSISTANT_STOP, EVENT_HOMEASSISTANT_START,
+    HTTP_HEADER_X_REQUESTED_WITH)
+from homeassistant.core import is_callback
 import homeassistant.helpers.config_validation as cv
 import homeassistant.remote as rem
 import homeassistant.util as hass_util
-from homeassistant.components import persistent_notification
-from homeassistant.const import (
-    SERVER_PORT, CONTENT_TYPE_JSON, ALLOWED_CORS_HEADERS,
-    EVENT_HOMEASSISTANT_STOP, EVENT_HOMEASSISTANT_START)
-from homeassistant.core import is_callback
 from homeassistant.util.logging import HideSensitiveDataFilter
 
 from .auth import auth_middleware
-from .ban import ban_middleware, process_wrong_login
+from .ban import ban_middleware
 from .const import (
-    KEY_USE_X_FORWARDED_FOR, KEY_TRUSTED_NETWORKS,
-    KEY_BANS_ENABLED, KEY_LOGIN_THRESHOLD,
-    KEY_DEVELOPMENT, KEY_AUTHENTICATED)
-from .static import FILE_SENDER, CACHING_FILE_SENDER, staticresource_middleware
+    KEY_BANS_ENABLED, KEY_AUTHENTICATED, KEY_LOGIN_THRESHOLD,
+    KEY_TRUSTED_NETWORKS, KEY_USE_X_FORWARDED_FOR)
+from .static import (
+    CachingFileResponse, CachingStaticResource, staticresource_middleware)
 from .util import get_real_ip
 
+REQUIREMENTS = ['aiohttp_cors==0.5.3']
+
+ALLOWED_CORS_HEADERS = [
+    ORIGIN, ACCEPT, HTTP_HEADER_X_REQUESTED_WITH, CONTENT_TYPE,
+    HTTP_HEADER_HA_AUTH]
+
 DOMAIN = 'http'
-REQUIREMENTS = ('aiohttp_cors==0.5.0',)
 
 CONF_API_PASSWORD = 'api_password'
 CONF_SERVER_HOST = 'server_host'
 CONF_SERVER_PORT = 'server_port'
 CONF_BASE_URL = 'base_url'
-CONF_DEVELOPMENT = 'development'
 CONF_SSL_CERTIFICATE = 'ssl_certificate'
 CONF_SSL_KEY = 'ssl_key'
 CONF_CORS_ORIGINS = 'cors_allowed_origins'
@@ -51,9 +56,7 @@ CONF_TRUSTED_NETWORKS = 'trusted_networks'
 CONF_LOGIN_ATTEMPTS_THRESHOLD = 'login_attempts_threshold'
 CONF_IP_BAN_ENABLED = 'ip_ban_enabled'
 
-NOTIFICATION_ID_LOGIN = 'http-login'
-
-# TLS configuation follows the best-practice guidelines specified here:
+# TLS configuration follows the best-practice guidelines specified here:
 # https://wiki.mozilla.org/Security/Server_Side_TLS
 # Intermediate guidelines are followed.
 SSL_VERSION = ssl.PROTOCOL_SSLv23
@@ -83,14 +86,12 @@ DEFAULT_LOGIN_ATTEMPT_THRESHOLD = -1
 HTTP_SCHEMA = vol.Schema({
     vol.Optional(CONF_API_PASSWORD, default=None): cv.string,
     vol.Optional(CONF_SERVER_HOST, default=DEFAULT_SERVER_HOST): cv.string,
-    vol.Optional(CONF_SERVER_PORT, default=SERVER_PORT):
-        vol.All(vol.Coerce(int), vol.Range(min=1, max=65535)),
+    vol.Optional(CONF_SERVER_PORT, default=SERVER_PORT): cv.port,
     vol.Optional(CONF_BASE_URL): cv.string,
-    vol.Optional(CONF_DEVELOPMENT, default=DEFAULT_DEVELOPMENT): cv.string,
     vol.Optional(CONF_SSL_CERTIFICATE, default=None): cv.isfile,
     vol.Optional(CONF_SSL_KEY, default=None): cv.isfile,
-    vol.Optional(CONF_CORS_ORIGINS, default=[]): vol.All(cv.ensure_list,
-                                                         [cv.string]),
+    vol.Optional(CONF_CORS_ORIGINS, default=[]):
+        vol.All(cv.ensure_list, [cv.string]),
     vol.Optional(CONF_USE_X_FORWARDED_FOR, default=False): cv.boolean,
     vol.Optional(CONF_TRUSTED_NETWORKS, default=[]):
         vol.All(cv.ensure_list, [ip_network]),
@@ -115,7 +116,6 @@ def async_setup(hass, config):
     api_password = conf[CONF_API_PASSWORD]
     server_host = conf[CONF_SERVER_HOST]
     server_port = conf[CONF_SERVER_PORT]
-    development = conf[CONF_DEVELOPMENT] == '1'
     ssl_certificate = conf[CONF_SSL_CERTIFICATE]
     ssl_key = conf[CONF_SSL_KEY]
     cors_origins = conf[CONF_CORS_ORIGINS]
@@ -130,7 +130,6 @@ def async_setup(hass, config):
 
     server = HomeAssistantWSGI(
         hass,
-        development=development,
         server_host=server_host,
         server_port=server_port,
         api_password=api_password,
@@ -145,12 +144,12 @@ def async_setup(hass, config):
 
     @asyncio.coroutine
     def stop_server(event):
-        """Callback to stop the server."""
+        """Stop the server."""
         yield from server.stop()
 
     @asyncio.coroutine
     def start_server(event):
-        """Callback to start the server."""
+        """Start the server."""
         hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, stop_server)
         yield from server.start()
 
@@ -178,28 +177,24 @@ def async_setup(hass, config):
 class HomeAssistantWSGI(object):
     """WSGI server for Home Assistant."""
 
-    def __init__(self, hass, development, api_password, ssl_certificate,
+    def __init__(self, hass, api_password, ssl_certificate,
                  ssl_key, server_host, server_port, cors_origins,
                  use_x_forwarded_for, trusted_networks,
                  login_threshold, is_ban_enabled):
         """Initialize the WSGI Home Assistant server."""
-        import aiohttp_cors
-
         middlewares = [auth_middleware, staticresource_middleware]
 
         if is_ban_enabled:
             middlewares.insert(0, ban_middleware)
 
-        self.app = web.Application(middlewares=middlewares, loop=hass.loop)
+        self.app = web.Application(middlewares=middlewares)
         self.app['hass'] = hass
         self.app[KEY_USE_X_FORWARDED_FOR] = use_x_forwarded_for
         self.app[KEY_TRUSTED_NETWORKS] = trusted_networks
         self.app[KEY_BANS_ENABLED] = is_ban_enabled
         self.app[KEY_LOGIN_THRESHOLD] = login_threshold
-        self.app[KEY_DEVELOPMENT] = development
 
         self.hass = hass
-        self.development = development
         self.api_password = api_password
         self.ssl_certificate = ssl_certificate
         self.ssl_key = ssl_key
@@ -209,6 +204,8 @@ class HomeAssistantWSGI(object):
         self.server = None
 
         if cors_origins:
+            import aiohttp_cors
+
             self.cors = aiohttp_cors.setup(self.app, defaults={
                 host: aiohttp_cors.ResourceOptions(
                     allow_headers=ALLOWED_CORS_HEADERS,
@@ -258,37 +255,44 @@ class HomeAssistantWSGI(object):
 
         self.app.router.add_route('GET', url, redirect)
 
-    def register_static_path(self, url_root, path, cache_length=31):
-        """Register a folder to serve as a static path.
-
-        Specify optional cache length of asset in days.
-        """
+    def register_static_path(self, url_path, path, cache_headers=True):
+        """Register a folder or file to serve as a static path."""
         if os.path.isdir(path):
-            self.app.router.add_static(url_root, path)
+            if cache_headers:
+                resource = CachingStaticResource
+            else:
+                resource = web.StaticResource
+            self.app.router.register_resource(resource(url_path, path))
             return
 
-        filepath = Path(path)
-
-        @asyncio.coroutine
-        def serve_file(request):
-            """Serve file from disk."""
-            res = yield from CACHING_FILE_SENDER.send(request, filepath)
-            return res
+        if cache_headers:
+            @asyncio.coroutine
+            def serve_file(request):
+                """Serve file from disk."""
+                return CachingFileResponse(path)
+        else:
+            @asyncio.coroutine
+            def serve_file(request):
+                """Serve file from disk."""
+                return web.FileResponse(path)
 
         # aiohttp supports regex matching for variables. Using that as temp
         # to work around cache busting MD5.
         # Turns something like /static/dev-panel.html into
         # /static/{filename:dev-panel(-[a-z0-9]{32}|)\.html}
-        base, ext = url_root.rsplit('.', 1)
-        base, file = base.rsplit('/', 1)
-        regex = r"{}(-[a-z0-9]{{32}}|)\.{}".format(file, ext)
-        url_pattern = "{}/{{filename:{}}}".format(base, regex)
+        base, ext = os.path.splitext(url_path)
+        if ext:
+            base, file = base.rsplit('/', 1)
+            regex = r"{}(-[a-z0-9]{{32}}|){}".format(file, ext)
+            url_pattern = "{}/{{filename:{}}}".format(base, regex)
+        else:
+            url_pattern = url_path
 
         self.app.router.add_route('GET', url_pattern, serve_file)
 
     @asyncio.coroutine
     def start(self):
-        """Start the wsgi server."""
+        """Start the WSGI server."""
         cors_added = set()
         if self.cors is not None:
             for route in list(self.app.router.routes()):
@@ -321,7 +325,7 @@ class HomeAssistantWSGI(object):
         # re-register all redirects, views, static paths.
         self.app._frozen = True  # pylint: disable=protected-access
 
-        self._handler = self.app.make_handler()
+        self._handler = self.app.make_handler(loop=self.hass.loop)
 
         try:
             self.server = yield from self.hass.loop.create_server(
@@ -330,17 +334,19 @@ class HomeAssistantWSGI(object):
             _LOGGER.error("Failed to create HTTP server at port %d: %s",
                           self.server_port, error)
 
-        self.app._frozen = False  # pylint: disable=protected-access
+        # pylint: disable=protected-access
+        self.app._middlewares = tuple(self.app._prepare_middleware())
+        self.app._frozen = False
 
     @asyncio.coroutine
     def stop(self):
-        """Stop the wsgi server."""
+        """Stop the WSGI server."""
         if self.server:
             self.server.close()
             yield from self.server.wait_closed()
         yield from self.app.shutdown()
         if self._handler:
-            yield from self._handler.finish_connections(60.0)
+            yield from self._handler.shutdown(10)
         yield from self.app.cleanup()
 
 
@@ -352,24 +358,28 @@ class HomeAssistantView(object):
     requires_auth = True  # Views inheriting from this class can override this
 
     # pylint: disable=no-self-use
-    def json(self, result, status_code=200):
+    def json(self, result, status_code=200, headers=None):
         """Return a JSON response."""
         msg = json.dumps(
             result, sort_keys=True, cls=rem.JSONEncoder).encode('UTF-8')
         return web.Response(
-            body=msg, content_type=CONTENT_TYPE_JSON, status=status_code)
+            body=msg, content_type=CONTENT_TYPE_JSON, status=status_code,
+            headers=headers)
 
-    def json_message(self, error, status_code=200):
+    def json_message(self, message, status_code=200, message_code=None,
+                     headers=None):
         """Return a JSON message response."""
-        return self.json({'message': error}, status_code)
+        data = {'message': message}
+        if message_code is not None:
+            data['code'] = message_code
+        return self.json(data, status_code, headers=headers)
 
     @asyncio.coroutine
     # pylint: disable=no-self-use
     def file(self, request, fil):
         """Return a file."""
         assert isinstance(fil, str), 'only string paths allowed'
-        response = yield from FILE_SENDER.send(request, Path(fil))
-        return response
+        return web.FileResponse(fil)
 
     def register(self, router):
         """Register the view with a router."""
@@ -395,7 +405,7 @@ class HomeAssistantView(object):
 
 
 def request_handler_factory(view, handler):
-    """Factory to wrap our handler classes."""
+    """Wrap the handler classes."""
     assert asyncio.iscoroutinefunction(handler) or is_callback(handler), \
         "Handler should be a coroutine or a callback."
 
@@ -409,13 +419,6 @@ def request_handler_factory(view, handler):
         authenticated = request.get(KEY_AUTHENTICATED, False)
 
         if view.requires_auth and not authenticated:
-            yield from process_wrong_login(request)
-            _LOGGER.warning('Login attempt or request with an invalid '
-                            'password from %s', remote_addr)
-            persistent_notification.async_create(
-                request.app['hass'],
-                'Invalid password used from {}'.format(remote_addr),
-                'Login attempt failed', NOTIFICATION_ID_LOGIN)
             raise HTTPUnauthorized()
 
         _LOGGER.info('Serving %s to %s (auth: %s)',
@@ -446,3 +449,41 @@ def request_handler_factory(view, handler):
         return web.Response(body=result, status=status_code)
 
     return handle
+
+
+class RequestDataValidator:
+    """Decorator that will validate the incoming data.
+
+    Takes in a voluptuous schema and adds 'post_data' as
+    keyword argument to the function call.
+
+    Will return a 400 if no JSON provided or doesn't match schema.
+    """
+
+    def __init__(self, schema):
+        """Initialize the decorator."""
+        self._schema = schema
+
+    def __call__(self, method):
+        """Decorate a function."""
+        @asyncio.coroutine
+        @wraps(method)
+        def wrapper(view, request, *args, **kwargs):
+            """Wrap a request handler with data validation."""
+            try:
+                data = yield from request.json()
+            except ValueError:
+                _LOGGER.error('Invalid JSON received.')
+                return view.json_message('Invalid JSON.', 400)
+
+            try:
+                kwargs['data'] = self._schema(data)
+            except vol.Invalid as err:
+                _LOGGER.error('Data does not match schema: %s', err)
+                return view.json_message(
+                    'Message format incorrect: {}'.format(err), 400)
+
+            result = yield from method(view, request, *args, **kwargs)
+            return result
+
+        return wrapper

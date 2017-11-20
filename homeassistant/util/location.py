@@ -9,7 +9,6 @@ from typing import Any, Optional, Tuple, Dict
 
 import requests
 
-
 ELEVATION_URL = 'http://maps.googleapis.com/maps/api/elevation/json'
 FREEGEO_API = 'https://freegeoip.io/json/'
 IP_API = 'http://ip-api.com/json'
@@ -76,14 +75,14 @@ def elevation(latitude, longitude):
 
     try:
         return int(float(req.json()['results'][0]['elevation']))
-    except (ValueError, KeyError):
+    except (ValueError, KeyError, IndexError):
         return 0
 
 
 # Author: https://github.com/maurycyp
 # Source: https://github.com/maurycyp/vincenty
 # License: https://github.com/maurycyp/vincenty/blob/master/LICENSE
-# pylint: disable=invalid-name, unused-variable
+# pylint: disable=invalid-name, unused-variable, invalid-sequence-index
 def vincenty(point1: Tuple[float, float], point2: Tuple[float, float],
              miles: bool=False) -> Optional[float]:
     """
@@ -147,7 +146,7 @@ def vincenty(point1: Tuple[float, float], point2: Tuple[float, float],
                                           (-3 + 4 * cos2SigmaM ** 2)))
     s = AXIS_B * A * (sigma - deltaSigma)
 
-    s /= 1000  # Converion of meters to kilometers
+    s /= 1000  # Conversion of meters to kilometers
     if miles:
         s *= MILES_PER_KILOMETER  # kilometers to miles
 

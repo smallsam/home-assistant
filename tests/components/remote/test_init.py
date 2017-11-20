@@ -3,7 +3,7 @@
 
 import unittest
 
-from homeassistant.bootstrap import setup_component
+from homeassistant.setup import setup_component
 from homeassistant.const import (
     ATTR_ENTITY_ID, STATE_ON, STATE_OFF, CONF_PLATFORM,
     SERVICE_TURN_ON, SERVICE_TURN_OFF)
@@ -81,7 +81,8 @@ class TestRemote(unittest.TestCase):
 
         remote.send_command(
             self.hass, entity_id='entity_id_val',
-            device='test_device', command='test_command')
+            device='test_device', command=['test_command'],
+            num_repeats='4', delay_secs='0.6')
 
         self.hass.block_till_done()
 

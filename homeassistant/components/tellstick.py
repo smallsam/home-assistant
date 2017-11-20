@@ -4,26 +4,32 @@ Tellstick Component.
 For more details about this component, please refer to the documentation at
 https://home-assistant.io/components/tellstick/
 """
+import asyncio
 import logging
 import threading
 
 import voluptuous as vol
 
 from homeassistant.helpers import discovery
-from homeassistant.const import EVENT_HOMEASSISTANT_STOP
+from homeassistant.core import callback
+from homeassistant.const import (
+    EVENT_HOMEASSISTANT_STOP, CONF_HOST, CONF_PORT)
 from homeassistant.helpers.entity import Entity
+import homeassistant.helpers.config_validation as cv
 
-DOMAIN = 'tellstick'
-
-REQUIREMENTS = ['tellcore-py==1.1.2']
+REQUIREMENTS = ['tellcore-py==1.1.2', 'tellcore-net==0.1']
 
 _LOGGER = logging.getLogger(__name__)
 
-ATTR_SIGNAL_REPETITIONS = 'signal_repetitions'
-DEFAULT_SIGNAL_REPETITIONS = 1
-
-ATTR_DISCOVER_DEVICES = 'devices'
 ATTR_DISCOVER_CONFIG = 'config'
+ATTR_DISCOVER_DEVICES = 'devices'
+CONF_SIGNAL_REPETITIONS = 'signal_repetitions'
+
+DEFAULT_SIGNAL_REPETITIONS = 1
+DOMAIN = 'tellstick'
+
+DATA_TELLSTICK = 'tellstick_device'
+SIGNAL_TELLCORE_CALLBACK = 'tellstick_callback'
 
 # Use a global tellstick domain lock to avoid getting Tellcore errors when
 # calling concurrently.
@@ -35,21 +41,23 @@ TELLCORE_REGISTRY = None
 
 CONFIG_SCHEMA = vol.Schema({
     DOMAIN: vol.Schema({
-        vol.Optional(ATTR_SIGNAL_REPETITIONS,
+        vol.Inclusive(CONF_HOST, 'tellcore-net'): cv.string,
+        vol.Inclusive(CONF_PORT, 'tellcore-net'): cv.port,
+        vol.Optional(CONF_SIGNAL_REPETITIONS,
                      default=DEFAULT_SIGNAL_REPETITIONS): vol.Coerce(int),
     }),
 }, extra=vol.ALLOW_EXTRA)
 
 
 def _discover(hass, config, component_name, found_tellcore_devices):
-    """Setup and send the discovery event."""
-    if not len(found_tellcore_devices):
+    """Set up and send the discovery event."""
+    if not found_tellcore_devices:
         return
 
     _LOGGER.info("Discovered %d new %s devices", len(found_tellcore_devices),
                  component_name)
 
-    signal_repetitions = config[DOMAIN].get(ATTR_SIGNAL_REPETITIONS)
+    signal_repetitions = config[DOMAIN].get(CONF_SIGNAL_REPETITIONS)
 
     discovery.load_platform(hass, component_name, DOMAIN, {
         ATTR_DISCOVER_DEVICES: found_tellcore_devices,
@@ -57,92 +65,71 @@ def _discover(hass, config, component_name, found_tellcore_devices):
 
 
 def setup(hass, config):
-    """Setup the Tellstick component."""
+    """Set up the Tellstick component."""
     from tellcore.constants import TELLSTICK_DIM
     from tellcore.telldus import AsyncioCallbackDispatcher
     from tellcore.telldus import TelldusCore
+    from tellcorenet import TellCoreClient
+
+    conf = config.get(DOMAIN, {})
+    net_host = conf.get(CONF_HOST)
+    net_port = conf.get(CONF_PORT)
+
+    # Initialize remote tellcore client
+    if net_host and net_port:
+        net_client = TellCoreClient(net_host, net_port)
+        net_client.start()
+
+        def stop_tellcore_net(event):
+            """Event handler to stop the client."""
+            net_client.stop()
+
+        hass.bus.listen_once(EVENT_HOMEASSISTANT_STOP, stop_tellcore_net)
 
     try:
         tellcore_lib = TelldusCore(
             callback_dispatcher=AsyncioCallbackDispatcher(hass.loop))
     except OSError:
-        _LOGGER.exception('Could not initialize Tellstick')
+        _LOGGER.exception("Could not initialize Tellstick")
         return False
 
     # Get all devices, switches and lights alike
-    all_tellcore_devices = tellcore_lib.devices()
+    tellcore_devices = tellcore_lib.devices()
 
     # Register devices
-    tellcore_registry = TellstickRegistry(hass, tellcore_lib)
-    tellcore_registry.register_tellcore_devices(all_tellcore_devices)
-    hass.data['tellcore_registry'] = tellcore_registry
+    hass.data[DATA_TELLSTICK] = {device.id: device for
+                                 device in tellcore_devices}
 
     # Discover the switches
     _discover(hass, config, 'switch',
-              [tellcore_device.id for tellcore_device in all_tellcore_devices
-               if not tellcore_device.methods(TELLSTICK_DIM)])
+              [device.id for device in tellcore_devices
+               if not device.methods(TELLSTICK_DIM)])
 
     # Discover the lights
     _discover(hass, config, 'light',
-              [tellcore_device.id for tellcore_device in all_tellcore_devices
-               if tellcore_device.methods(TELLSTICK_DIM)])
+              [device.id for device in tellcore_devices
+               if device.methods(TELLSTICK_DIM)])
+
+    @callback
+    def async_handle_callback(tellcore_id, tellcore_command,
+                              tellcore_data, cid):
+        """Handle the actual callback from Tellcore."""
+        hass.helpers.dispatcher.async_dispatcher_send(
+            SIGNAL_TELLCORE_CALLBACK, tellcore_id,
+            tellcore_command, tellcore_data)
+
+    # Register callback
+    callback_id = tellcore_lib.register_device_event(
+        async_handle_callback)
+
+    def clean_up_callback(event):
+        """Unregister the callback bindings."""
+        if callback_id is not None:
+            tellcore_lib.unregister_callback(callback_id)
+
+    hass.bus.listen_once(EVENT_HOMEASSISTANT_STOP, clean_up_callback)
 
     return True
-
-
-class TellstickRegistry(object):
-    """Handle everything around Tellstick callbacks.
-
-    Keeps a map device ids to the tellcore device object, and
-    another to the HA device objects (entities).
-
-    Also responsible for registering / cleanup of callbacks, and for
-    dispatching the callbacks to the corresponding HA device object.
-
-    All device specific logic should be elsewhere (Entities).
-    """
-
-    def __init__(self, hass, tellcore_lib):
-        """Initialize the Tellstick mappings and callbacks."""
-        # used when map callback device id to ha entities.
-        self._id_to_ha_device_map = {}
-        self._id_to_tellcore_device_map = {}
-        self._setup_tellcore_callback(hass, tellcore_lib)
-
-    def _tellcore_event_callback(self, tellcore_id, tellcore_command,
-                                 tellcore_data, cid):
-        """Handle the actual callback from Tellcore."""
-        ha_device = self._id_to_ha_device_map.get(tellcore_id, None)
-        if ha_device is not None:
-            # Pass it on to the HA device object
-            ha_device.update_from_callback(tellcore_command, tellcore_data)
-
-    def _setup_tellcore_callback(self, hass, tellcore_lib):
-        """Register the callback handler."""
-        callback_id = tellcore_lib.register_device_event(
-            self._tellcore_event_callback)
-
-        def clean_up_callback(event):
-            """Unregister the callback bindings."""
-            if callback_id is not None:
-                tellcore_lib.unregister_callback(callback_id)
-                _LOGGER.debug("Tellstick callback unregistered")
-
-        hass.bus.listen_once(EVENT_HOMEASSISTANT_STOP, clean_up_callback)
-
-    def register_ha_device(self, tellcore_id, ha_device):
-        """Register a new HA device to receive callback updates."""
-        self._id_to_ha_device_map[tellcore_id] = ha_device
-
-    def register_tellcore_devices(self, tellcore_devices):
-        """Register a list of devices."""
-        self._id_to_tellcore_device_map.update(
-            {tellcore_device.id: tellcore_device for tellcore_device
-             in tellcore_devices})
-
-    def get_tellcore_device(self, tellcore_id):
-        """Return a device by tellcore_id."""
-        return self._id_to_tellcore_device_map.get(tellcore_id, None)
 
 
 class TellstickDevice(Entity):
@@ -151,8 +138,8 @@ class TellstickDevice(Entity):
     Contains the common logic for all Tellstick devices.
     """
 
-    def __init__(self, tellcore_id, tellcore_registry, signal_repetitions):
-        """Initalize the Tellstick device."""
+    def __init__(self, tellcore_device, signal_repetitions):
+        """Init the Tellstick device."""
         self._signal_repetitions = signal_repetitions
         self._state = None
         self._requested_state = None
@@ -160,13 +147,16 @@ class TellstickDevice(Entity):
         self._repeats_left = 0
 
         # Look up our corresponding tellcore device
-        self._tellcore_device = tellcore_registry.get_tellcore_device(
-            tellcore_id)
-        self._name = self._tellcore_device.name
-        # Query tellcore for the current state
-        self._update_from_tellcore()
-        # Add ourselves to the mapping for callbacks
-        tellcore_registry.register_ha_device(tellcore_id, self)
+        self._tellcore_device = tellcore_device
+        self._name = tellcore_device.name
+
+    @asyncio.coroutine
+    def async_added_to_hass(self):
+        """Register callbacks."""
+        self.hass.helpers.dispatcher.async_dispatcher_connect(
+            SIGNAL_TELLCORE_CALLBACK,
+            self.update_from_callback
+        )
 
     @property
     def should_poll(self):
@@ -193,7 +183,7 @@ class TellstickDevice(Entity):
         raise NotImplementedError
 
     def _parse_tellcore_data(self, tellcore_data):
-        """Turn the value recieved from tellcore into something useful."""
+        """Turn the value received from tellcore into something useful."""
         raise NotImplementedError
 
     def _update_model(self, new_state, data):
@@ -218,7 +208,7 @@ class TellstickDevice(Entity):
                     _LOGGER.error(err)
 
     def _change_device_state(self, new_state, data):
-        """The logic for actually turning on or off the device."""
+        """Turn on or off the device."""
         with TELLSTICK_LOCK:
             # Set the requested state and number of repeats before calling
             # _send_repeated_command the first time. Subsequent calls will be
@@ -245,8 +235,8 @@ class TellstickDevice(Entity):
 
     def _update_model_from_command(self, tellcore_command, tellcore_data):
         """Update the model, from a sent tellcore command and data."""
-        from tellcore.constants import (TELLSTICK_TURNON, TELLSTICK_TURNOFF,
-                                        TELLSTICK_DIM)
+        from tellcore.constants import (
+            TELLSTICK_TURNON, TELLSTICK_TURNOFF, TELLSTICK_DIM)
 
         if tellcore_command not in [TELLSTICK_TURNON, TELLSTICK_TURNOFF,
                                     TELLSTICK_DIM]:
@@ -256,21 +246,25 @@ class TellstickDevice(Entity):
         self._update_model(tellcore_command != TELLSTICK_TURNOFF,
                            self._parse_tellcore_data(tellcore_data))
 
-    def update_from_callback(self, tellcore_command, tellcore_data):
+    def update_from_callback(self, tellcore_id, tellcore_command,
+                             tellcore_data):
         """Handle updates from the tellcore callback."""
+        if tellcore_id != self._tellcore_device.id:
+            return
+
         self._update_model_from_command(tellcore_command, tellcore_data)
         self.schedule_update_ha_state()
 
         # This is a benign race on _repeats_left -- it's checked with the lock
         # in _send_repeated_command.
         if self._repeats_left > 0:
-            self.hass.async_add_job(self._send_repeated_command)
+            self._send_repeated_command()
 
     def _update_from_tellcore(self):
         """Read the current state of the device from the tellcore library."""
         from tellcore.library import TelldusError
-        from tellcore.constants import (TELLSTICK_TURNON, TELLSTICK_TURNOFF,
-                                        TELLSTICK_DIM)
+        from tellcore.constants import (
+            TELLSTICK_TURNON, TELLSTICK_TURNOFF, TELLSTICK_DIM)
 
         with TELLSTICK_LOCK:
             try:
@@ -284,4 +278,3 @@ class TellstickDevice(Entity):
     def update(self):
         """Poll the current state of the device."""
         self._update_from_tellcore()
-        self.schedule_update_ha_state()

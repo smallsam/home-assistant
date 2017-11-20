@@ -9,14 +9,15 @@ import logging
 
 import voluptuous as vol
 
+import homeassistant.helpers.config_validation as cv
 from homeassistant.const import (
     ATTR_HIDDEN, ATTR_LATITUDE, ATTR_LONGITUDE, CONF_NAME, CONF_LATITUDE,
-    CONF_LONGITUDE, CONF_ICON)
+    CONF_LONGITUDE, CONF_ICON, CONF_RADIUS)
+from homeassistant.loader import bind_hass
 from homeassistant.helpers import config_per_platform
 from homeassistant.helpers.entity import Entity, async_generate_entity_id
 from homeassistant.util.async import run_callback_threadsafe
 from homeassistant.util.location import distance
-import homeassistant.helpers.config_validation as cv
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -24,7 +25,6 @@ ATTR_PASSIVE = 'passive'
 ATTR_RADIUS = 'radius'
 
 CONF_PASSIVE = 'passive'
-CONF_RADIUS = 'radius'
 
 DEFAULT_NAME = 'Unnamed zone'
 DEFAULT_PASSIVE = False
@@ -47,9 +47,10 @@ PLATFORM_SCHEMA = vol.Schema({
     vol.Optional(CONF_RADIUS, default=DEFAULT_RADIUS): vol.Coerce(float),
     vol.Optional(CONF_PASSIVE, default=DEFAULT_PASSIVE): cv.boolean,
     vol.Optional(CONF_ICON): cv.icon,
-})
+}, extra=vol.ALLOW_EXTRA)
 
 
+@bind_hass
 def active_zone(hass, latitude, longitude, radius=0):
     """Find the active zone for given latitude, longitude."""
     return run_callback_threadsafe(
@@ -57,6 +58,7 @@ def active_zone(hass, latitude, longitude, radius=0):
     ).result()
 
 
+@bind_hass
 def async_active_zone(hass, latitude, longitude, radius=0):
     """Find the active zone for given latitude, longitude.
 
@@ -104,7 +106,7 @@ def in_zone(zone, latitude, longitude, radius=0):
 
 @asyncio.coroutine
 def async_setup(hass, config):
-    """Setup zone."""
+    """Set up the zone."""
     entities = set()
     tasks = []
     for _, entry in config_per_platform(config, DOMAIN):
@@ -112,8 +114,8 @@ def async_setup(hass, config):
         zone = Zone(hass, name, entry[CONF_LATITUDE], entry[CONF_LONGITUDE],
                     entry.get(CONF_RADIUS), entry.get(CONF_ICON),
                     entry.get(CONF_PASSIVE))
-        zone.entity_id = async_generate_entity_id(ENTITY_ID_FORMAT, name,
-                                                  entities)
+        zone.entity_id = async_generate_entity_id(
+            ENTITY_ID_FORMAT, name, entities)
         tasks.append(zone.async_update_ha_state())
         entities.add(zone.entity_id)
 

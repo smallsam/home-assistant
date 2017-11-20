@@ -1,18 +1,16 @@
 """Color util methods."""
 import logging
 import math
+import colorsys
 
 from typing import Tuple
 
 _LOGGER = logging.getLogger(__name__)
 
-HASS_COLOR_MAX = 500  # mireds (inverted)
-HASS_COLOR_MIN = 154
-
 # Official CSS3 colors from w3.org:
 # https://www.w3.org/TR/2010/PR-css3-color-20101028/#html4
 # names do not have spaces in them so that we can compare against
-# reuqests more easily (by removing spaces from the requests as well).
+# requests more easily (by removing spaces from the requests as well).
 # This lets "dark seagreen" and "dark sea green" both match the same
 # color "darkseagreen".
 COLORS = {
@@ -182,7 +180,7 @@ def color_name_to_rgb(color_name):
 # Taken from:
 # http://www.developers.meethue.com/documentation/color-conversions-rgb-xy
 # License: Code is given as is. Use at your own risk and discretion.
-# pylint: disable=invalid-name
+# pylint: disable=invalid-name, invalid-sequence-index
 def color_RGB_to_xy(iR: int, iG: int, iB: int) -> Tuple[float, float, int]:
     """Convert from RGB color to XY color."""
     if iR + iG + iB == 0:
@@ -216,9 +214,9 @@ def color_RGB_to_xy(iR: int, iG: int, iB: int) -> Tuple[float, float, int]:
     return round(x, 3), round(y, 3), brightness
 
 
-# taken from
-# https://github.com/benknight/hue-python-rgb-converter/blob/master/rgb_cie.py
-# Copyright (c) 2014 Benjamin Knight / MIT License.
+# Converted to Python from Obj-C, original source from:
+# http://www.developers.meethue.com/documentation/color-conversions-rgb-xy
+# pylint: disable=invalid-sequence-index
 def color_xy_brightness_to_RGB(vX: float, vY: float,
                                ibrightness: int) -> Tuple[int, int, int]:
     """Convert from XYZ to RGB."""
@@ -235,9 +233,9 @@ def color_xy_brightness_to_RGB(vX: float, vY: float,
     Z = (Y / vY) * (1 - vX - vY)
 
     # Convert to RGB using Wide RGB D65 conversion.
-    r = X * 1.612 - Y * 0.203 - Z * 0.302
-    g = -X * 0.509 + Y * 1.412 + Z * 0.066
-    b = X * 0.026 - Y * 0.072 + Z * 0.962
+    r = X * 1.656492 - Y * 0.354851 - Z * 0.255038
+    g = -X * 0.707196 + Y * 1.655397 + Z * 0.036152
+    b = X * 0.051713 - Y * 0.121364 + Z * 1.011530
 
     # Apply reverse gamma correction.
     r, g, b = map(
@@ -259,6 +257,70 @@ def color_xy_brightness_to_RGB(vX: float, vY: float,
     return (ir, ig, ib)
 
 
+# pylint: disable=invalid-sequence-index
+def color_hsb_to_RGB(fH: float, fS: float, fB: float) -> Tuple[int, int, int]:
+    """Convert a hsb into its rgb representation."""
+    if fS == 0:
+        fV = fB * 255
+        return (fV, fV, fV)
+
+    r = g = b = 0
+    h = fH / 60
+    f = h - float(math.floor(h))
+    p = fB * (1 - fS)
+    q = fB * (1 - fS * f)
+    t = fB * (1 - (fS * (1 - f)))
+
+    if int(h) == 0:
+        r = int(fB * 255)
+        g = int(t * 255)
+        b = int(p * 255)
+    elif int(h) == 1:
+        r = int(q * 255)
+        g = int(fB * 255)
+        b = int(p * 255)
+    elif int(h) == 2:
+        r = int(p * 255)
+        g = int(fB * 255)
+        b = int(t * 255)
+    elif int(h) == 3:
+        r = int(p * 255)
+        g = int(q * 255)
+        b = int(fB * 255)
+    elif int(h) == 4:
+        r = int(t * 255)
+        g = int(p * 255)
+        b = int(fB * 255)
+    elif int(h) == 5:
+        r = int(fB * 255)
+        g = int(p * 255)
+        b = int(q * 255)
+
+    return (r, g, b)
+
+
+# pylint: disable=invalid-sequence-index
+def color_RGB_to_hsv(iR: int, iG: int, iB: int) -> Tuple[int, int, int]:
+    """Convert an rgb color to its hsv representation."""
+    fHSV = colorsys.rgb_to_hsv(iR/255.0, iG/255.0, iB/255.0)
+    return (int(fHSV[0]*65536), int(fHSV[1]*255), int(fHSV[2]*255))
+
+
+# pylint: disable=invalid-sequence-index
+def color_hsv_to_RGB(iH: int, iS: int, iV: int) -> Tuple[int, int, int]:
+    """Convert an hsv color into its rgb representation."""
+    fRGB = colorsys.hsv_to_rgb(iH/65536, iS/255, iV/255)
+    return (int(fRGB[0]*255), int(fRGB[1]*255), int(fRGB[2]*255))
+
+
+# pylint: disable=invalid-sequence-index
+def color_xy_to_hs(vX: float, vY: float) -> Tuple[int, int]:
+    """Convert an xy color to its hs representation."""
+    h, s, _ = color_RGB_to_hsv(*color_xy_brightness_to_RGB(vX, vY, 255))
+    return (h, s)
+
+
+# pylint: disable=invalid-sequence-index
 def _match_max_scale(input_colors: Tuple[int, ...],
                      output_colors: Tuple[int, ...]) -> Tuple[int, ...]:
     """Match the maximum value of the output to the input."""
@@ -288,9 +350,14 @@ def color_rgbw_to_rgb(r, g, b, w):
     # Add the white channel back into the rgb channels.
     rgb = (r + w, g + w, b + w)
 
-    # Match the output maximum value to the input. This ensures the the
+    # Match the output maximum value to the input. This ensures the
     # output doesn't overflow.
     return _match_max_scale((r, g, b, w), rgb)
+
+
+def color_rgb_to_hex(r, g, b):
+    """Return a RGB color from a hex color string."""
+    return '{0:02x}{1:02x}{2:02x}'.format(r, g, b)
 
 
 def rgb_hex_to_rgb_list(hex_string):
@@ -367,9 +434,9 @@ def _get_blue(temperature: float) -> float:
 
 def color_temperature_mired_to_kelvin(mired_temperature):
     """Convert absolute mired shift to degrees kelvin."""
-    return 1000000 / mired_temperature
+    return math.floor(1000000 / mired_temperature)
 
 
 def color_temperature_kelvin_to_mired(kelvin_temperature):
     """Convert degrees kelvin to mired shift."""
-    return 1000000 / kelvin_temperature
+    return math.floor(1000000 / kelvin_temperature)

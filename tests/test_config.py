@@ -1,8 +1,10 @@
 """Test config utils."""
 # pylint: disable=protected-access
+import asyncio
 import os
 import unittest
 import unittest.mock as mock
+from collections import OrderedDict
 
 import pytest
 from voluptuous import MultipleInvalid
@@ -14,15 +16,29 @@ from homeassistant.const import (
     CONF_TIME_ZONE, CONF_ELEVATION, CONF_CUSTOMIZE, __version__,
     CONF_UNIT_SYSTEM_METRIC, CONF_UNIT_SYSTEM_IMPERIAL, CONF_TEMPERATURE_UNIT)
 from homeassistant.util import location as location_util, dt as dt_util
+from homeassistant.util.yaml import SECRET_YAML
 from homeassistant.util.async import run_coroutine_threadsafe
 from homeassistant.helpers.entity import Entity
+from homeassistant.components.config.group import (
+    CONFIG_PATH as GROUP_CONFIG_PATH)
+from homeassistant.components.config.automation import (
+    CONFIG_PATH as AUTOMATIONS_CONFIG_PATH)
+from homeassistant.components.config.script import (
+    CONFIG_PATH as SCRIPTS_CONFIG_PATH)
+from homeassistant.components.config.customize import (
+    CONFIG_PATH as CUSTOMIZE_CONFIG_PATH)
 
 from tests.common import (
-    get_test_config_dir, get_test_home_assistant)
+    get_test_config_dir, get_test_home_assistant, mock_coro)
 
 CONFIG_DIR = get_test_config_dir()
 YAML_PATH = os.path.join(CONFIG_DIR, config_util.YAML_CONFIG_FILE)
+SECRET_PATH = os.path.join(CONFIG_DIR, SECRET_YAML)
 VERSION_PATH = os.path.join(CONFIG_DIR, config_util.VERSION_FILE)
+GROUP_PATH = os.path.join(CONFIG_DIR, GROUP_CONFIG_PATH)
+AUTOMATIONS_PATH = os.path.join(CONFIG_DIR, AUTOMATIONS_CONFIG_PATH)
+SCRIPTS_PATH = os.path.join(CONFIG_DIR, SCRIPTS_CONFIG_PATH)
+CUSTOMIZE_PATH = os.path.join(CONFIG_DIR, CUSTOMIZE_CONFIG_PATH)
 ORIG_TIMEZONE = dt_util.DEFAULT_TIME_ZONE
 
 
@@ -48,16 +64,37 @@ class TestConfig(unittest.TestCase):
         if os.path.isfile(YAML_PATH):
             os.remove(YAML_PATH)
 
+        if os.path.isfile(SECRET_PATH):
+            os.remove(SECRET_PATH)
+
         if os.path.isfile(VERSION_PATH):
             os.remove(VERSION_PATH)
 
+        if os.path.isfile(GROUP_PATH):
+            os.remove(GROUP_PATH)
+
+        if os.path.isfile(AUTOMATIONS_PATH):
+            os.remove(AUTOMATIONS_PATH)
+
+        if os.path.isfile(SCRIPTS_PATH):
+            os.remove(SCRIPTS_PATH)
+
+        if os.path.isfile(CUSTOMIZE_PATH):
+            os.remove(CUSTOMIZE_PATH)
+
         self.hass.stop()
 
+    # pylint: disable=no-self-use
     def test_create_default_config(self):
         """Test creation of default config."""
         config_util.create_default_config(CONFIG_DIR, False)
 
-        self.assertTrue(os.path.isfile(YAML_PATH))
+        assert os.path.isfile(YAML_PATH)
+        assert os.path.isfile(SECRET_PATH)
+        assert os.path.isfile(VERSION_PATH)
+        assert os.path.isfile(GROUP_PATH)
+        assert os.path.isfile(AUTOMATIONS_PATH)
+        assert os.path.isfile(CUSTOMIZE_PATH)
 
     def test_find_config_file_yaml(self):
         """Test if it finds a YAML config file."""
@@ -152,7 +189,8 @@ class TestConfig(unittest.TestCase):
             CONF_ELEVATION: 101,
             CONF_UNIT_SYSTEM: CONF_UNIT_SYSTEM_METRIC,
             CONF_NAME: 'Home',
-            CONF_TIME_ZONE: 'America/Los_Angeles'
+            CONF_TIME_ZONE: 'America/Los_Angeles',
+            CONF_CUSTOMIZE: OrderedDict(),
         }
 
         assert expected_values == ha_conf
@@ -170,16 +208,17 @@ class TestConfig(unittest.TestCase):
                 os.path.join(CONFIG_DIR, 'non_existing_dir/'), False))
         self.assertTrue(mock_print.called)
 
+    # pylint: disable=no-self-use
     def test_core_config_schema(self):
         """Test core config schema."""
         for value in (
-            {CONF_UNIT_SYSTEM: 'K'},
-            {'time_zone': 'non-exist'},
-            {'latitude': '91'},
-            {'longitude': -181},
-            {'customize': 'bla'},
-            {'customize': {'invalid_entity_id': {}}},
-            {'customize': {'light.sensor': 100}},
+                {CONF_UNIT_SYSTEM: 'K'},
+                {'time_zone': 'non-exist'},
+                {'latitude': '91'},
+                {'longitude': -181},
+                {'customize': 'bla'},
+                {'customize': {'light.sensor': 100}},
+                {'customize': {'entity_id': []}},
         ):
             with pytest.raises(MultipleInvalid):
                 config_util.CORE_CONFIG_SCHEMA(value)
@@ -196,13 +235,13 @@ class TestConfig(unittest.TestCase):
             },
         })
 
-    def test_entity_customization(self):
-        """Test entity customization through configuration."""
-        config = {CONF_LATITUDE: 50,
-                  CONF_LONGITUDE: 50,
-                  CONF_NAME: 'Test',
-                  CONF_CUSTOMIZE: {'test.test': {'hidden': True}}}
+    def test_customize_glob_is_ordered(self):
+        """Test that customize_glob preserves order."""
+        conf = config_util.CORE_CONFIG_SCHEMA(
+            {'customize_glob': OrderedDict()})
+        self.assertIsInstance(conf['customize_glob'], OrderedDict)
 
+    def _compute_state(self, config):
         run_coroutine_threadsafe(
             config_util.async_process_ha_core_config(self.hass, config),
             self.hass.loop).result()
@@ -210,62 +249,153 @@ class TestConfig(unittest.TestCase):
         entity = Entity()
         entity.entity_id = 'test.test'
         entity.hass = self.hass
-        entity.update_ha_state()
+        entity.schedule_update_ha_state()
 
         self.hass.block_till_done()
 
-        state = self.hass.states.get('test.test')
+        return self.hass.states.get('test.test')
+
+    def test_entity_customization_false(self):
+        """Test entity customization through configuration."""
+        config = {CONF_LATITUDE: 50,
+                  CONF_LONGITUDE: 50,
+                  CONF_NAME: 'Test',
+                  CONF_CUSTOMIZE: {
+                      'test.test': {'hidden': False}}}
+
+        state = self._compute_state(config)
+
+        assert 'hidden' not in state.attributes
+
+    def test_entity_customization(self):
+        """Test entity customization through configuration."""
+        config = {CONF_LATITUDE: 50,
+                  CONF_LONGITUDE: 50,
+                  CONF_NAME: 'Test',
+                  CONF_CUSTOMIZE: {'test.test': {'hidden': True}}}
+
+        state = self._compute_state(config)
 
         assert state.attributes['hidden']
 
     @mock.patch('homeassistant.config.shutil')
     @mock.patch('homeassistant.config.os')
     def test_remove_lib_on_upgrade(self, mock_os, mock_shutil):
-        """Test removal of library on upgrade."""
-        ha_version = '0.7.0'
-
+        """Test removal of library on upgrade from before 0.50."""
+        ha_version = '0.49.0'
         mock_os.path.isdir = mock.Mock(return_value=True)
-
         mock_open = mock.mock_open()
         with mock.patch('homeassistant.config.open', mock_open, create=True):
             opened_file = mock_open.return_value
+            # pylint: disable=no-member
             opened_file.readline.return_value = ha_version
-
             self.hass.config.path = mock.Mock()
-
             config_util.process_ha_config_upgrade(self.hass)
-
             hass_path = self.hass.config.path.return_value
 
             self.assertEqual(mock_os.path.isdir.call_count, 1)
             self.assertEqual(
                 mock_os.path.isdir.call_args, mock.call(hass_path)
             )
-
             self.assertEqual(mock_shutil.rmtree.call_count, 1)
             self.assertEqual(
                 mock_shutil.rmtree.call_args, mock.call(hass_path)
             )
 
-    @mock.patch('homeassistant.config.shutil')
-    @mock.patch('homeassistant.config.os')
-    def test_not_remove_lib_if_not_upgrade(self, mock_os, mock_shutil):
-        """Test removal of library with no upgrade."""
-        ha_version = __version__
-
-        mock_os.path.isdir = mock.Mock(return_value=True)
+    def test_process_config_upgrade(self):
+        """Test update of version on upgrade."""
+        ha_version = '0.8.0'
 
         mock_open = mock.mock_open()
         with mock.patch('homeassistant.config.open', mock_open, create=True):
             opened_file = mock_open.return_value
+            # pylint: disable=no-member
+            opened_file.readline.return_value = ha_version
+
+            config_util.process_ha_config_upgrade(self.hass)
+
+            self.assertEqual(opened_file.write.call_count, 1)
+            self.assertEqual(
+                opened_file.write.call_args, mock.call(__version__)
+            )
+
+    def test_config_upgrade_same_version(self):
+        """Test no update of version on no upgrade."""
+        ha_version = __version__
+
+        mock_open = mock.mock_open()
+        with mock.patch('homeassistant.config.open', mock_open, create=True):
+            opened_file = mock_open.return_value
+            # pylint: disable=no-member
+            opened_file.readline.return_value = ha_version
+
+            config_util.process_ha_config_upgrade(self.hass)
+
+            assert opened_file.write.call_count == 0
+
+    def test_config_upgrade_no_file(self):
+        """Test update of version on upgrade, with no version file."""
+        mock_open = mock.mock_open()
+        mock_open.side_effect = [FileNotFoundError(), mock.DEFAULT]
+        with mock.patch('homeassistant.config.open', mock_open, create=True):
+            opened_file = mock_open.return_value
+            # pylint: disable=no-member
+            config_util.process_ha_config_upgrade(self.hass)
+            self.assertEqual(opened_file.write.call_count, 1)
+            self.assertEqual(
+                opened_file.write.call_args, mock.call(__version__))
+
+    @mock.patch('homeassistant.config.shutil')
+    @mock.patch('homeassistant.config.os')
+    def test_migrate_file_on_upgrade(self, mock_os, mock_shutil):
+        """Test migrate of config files on upgrade."""
+        ha_version = '0.7.0'
+
+        mock_os.path.isdir = mock.Mock(return_value=True)
+
+        mock_open = mock.mock_open()
+
+        def _mock_isfile(filename):
+            return True
+
+        with mock.patch('homeassistant.config.open', mock_open, create=True), \
+                mock.patch(
+                    'homeassistant.config.os.path.isfile', _mock_isfile):
+            opened_file = mock_open.return_value
+            # pylint: disable=no-member
             opened_file.readline.return_value = ha_version
 
             self.hass.config.path = mock.Mock()
 
             config_util.process_ha_config_upgrade(self.hass)
 
-            assert mock_os.path.isdir.call_count == 0
-            assert mock_shutil.rmtree.call_count == 0
+        assert mock_os.rename.call_count == 1
+
+    @mock.patch('homeassistant.config.shutil')
+    @mock.patch('homeassistant.config.os')
+    def test_migrate_no_file_on_upgrade(self, mock_os, mock_shutil):
+        """Test not migrating config files on upgrade."""
+        ha_version = '0.7.0'
+
+        mock_os.path.isdir = mock.Mock(return_value=True)
+
+        mock_open = mock.mock_open()
+
+        def _mock_isfile(filename):
+            return False
+
+        with mock.patch('homeassistant.config.open', mock_open, create=True), \
+                mock.patch(
+                    'homeassistant.config.os.path.isfile', _mock_isfile):
+            opened_file = mock_open.return_value
+            # pylint: disable=no-member
+            opened_file.readline.return_value = ha_version
+
+            self.hass.config.path = mock.Mock()
+
+            config_util.process_ha_config_upgrade(self.hass)
+
+        assert mock_os.rename.call_count == 0
 
     def test_loading_configuration(self):
         """Test loading core config onto hass object."""
@@ -279,6 +409,7 @@ class TestConfig(unittest.TestCase):
                 'name': 'Huis',
                 CONF_UNIT_SYSTEM: CONF_UNIT_SYSTEM_IMPERIAL,
                 'time_zone': 'America/New_York',
+                'whitelist_external_dirs': '/tmp',
             }), self.hass.loop).result()
 
         assert self.hass.config.latitude == 60
@@ -287,6 +418,8 @@ class TestConfig(unittest.TestCase):
         assert self.hass.config.location_name == 'Huis'
         assert self.hass.config.units.name == CONF_UNIT_SYSTEM_IMPERIAL
         assert self.hass.config.time_zone.zone == 'America/New_York'
+        assert len(self.hass.config.whitelist_external_dirs) == 2
+        assert '/tmp' in self.hass.config.whitelist_external_dirs
 
     def test_loading_configuration_temperature_unit(self):
         """Test backward compatibility when loading core config."""
@@ -308,6 +441,38 @@ class TestConfig(unittest.TestCase):
         assert self.hass.config.location_name == 'Huis'
         assert self.hass.config.units.name == CONF_UNIT_SYSTEM_METRIC
         assert self.hass.config.time_zone.zone == 'America/New_York'
+
+    def test_loading_configuration_from_packages(self):
+        """Test loading packages config onto hass object config."""
+        self.hass.config = mock.Mock()
+
+        run_coroutine_threadsafe(
+            config_util.async_process_ha_core_config(self.hass, {
+                'latitude': 39,
+                'longitude': -1,
+                'elevation': 500,
+                'name': 'Huis',
+                CONF_TEMPERATURE_UNIT: 'C',
+                'time_zone': 'Europe/Madrid',
+                'packages': {
+                    'package_1': {'wake_on_lan': None},
+                    'package_2': {'light': {'platform': 'hue'},
+                                  'media_extractor': None,
+                                  'sun': None}},
+            }), self.hass.loop).result()
+
+        # Empty packages not allowed
+        with pytest.raises(MultipleInvalid):
+            run_coroutine_threadsafe(
+                config_util.async_process_ha_core_config(self.hass, {
+                    'latitude': 39,
+                    'longitude': -1,
+                    'elevation': 500,
+                    'name': 'Huis',
+                    CONF_TEMPERATURE_UNIT: 'C',
+                    'time_zone': 'Europe/Madrid',
+                    'packages': {'empty_package': None},
+                }), self.hass.loop).result()
 
     @mock.patch('homeassistant.util.location.detect_location_info',
                 autospec=True, return_value=location_util.LocationInfo(
@@ -344,6 +509,7 @@ class TestConfig(unittest.TestCase):
                                                          mock_elevation):
         """Test config remains unchanged if discovery fails."""
         self.hass.config = Config()
+        self.hass.config.config_dir = "/test/config"
 
         run_coroutine_threadsafe(
             config_util.async_process_ha_core_config(
@@ -357,6 +523,38 @@ class TestConfig(unittest.TestCase):
         assert self.hass.config.location_name == blankConfig.location_name
         assert self.hass.config.units == blankConfig.units
         assert self.hass.config.time_zone == blankConfig.time_zone
+        assert len(self.hass.config.whitelist_external_dirs) == 1
+        assert "/test/config/www" in self.hass.config.whitelist_external_dirs
+
+    @mock.patch('asyncio.create_subprocess_exec')
+    def test_check_ha_config_file_correct(self, mock_create):
+        """Check that restart propagates to stop."""
+        process_mock = mock.MagicMock()
+        attrs = {
+            'communicate.return_value': mock_coro(('output', 'error')),
+            'wait.return_value': mock_coro(0)}
+        process_mock.configure_mock(**attrs)
+        mock_create.return_value = mock_coro(process_mock)
+
+        assert run_coroutine_threadsafe(
+            config_util.async_check_ha_config_file(self.hass), self.hass.loop
+        ).result() is None
+
+    @mock.patch('asyncio.create_subprocess_exec')
+    def test_check_ha_config_file_wrong(self, mock_create):
+        """Check that restart with a bad config doesn't propagate to stop."""
+        process_mock = mock.MagicMock()
+        attrs = {
+            'communicate.return_value':
+                mock_coro(('\033[34mhello'.encode('utf-8'), 'error')),
+            'wait.return_value': mock_coro(1)}
+        process_mock.configure_mock(**attrs)
+        mock_create.return_value = mock_coro(process_mock)
+
+        assert run_coroutine_threadsafe(
+            config_util.async_check_ha_config_file(self.hass),
+            self.hass.loop
+        ).result() == 'hello'
 
 
 # pylint: disable=redefined-outer-name
@@ -375,6 +573,7 @@ def test_merge(merge_log_err):
         'pack_11': {'input_select': {'is1': None}},
         'pack_list': {'light': {'platform': 'test'}},
         'pack_list2': {'light': [{'platform': 'test'}]},
+        'pack_none': {'wake_on_lan': None},
     }
     config = {
         config_util.CONF_CORE: {config_util.CONF_PACKAGES: packages},
@@ -384,10 +583,11 @@ def test_merge(merge_log_err):
     config_util.merge_packages_config(config, packages)
 
     assert merge_log_err.call_count == 0
-    assert len(config) == 4
+    assert len(config) == 5
     assert len(config['input_boolean']) == 2
     assert len(config['input_select']) == 1
     assert len(config['light']) == 3
+    assert config['wake_on_lan'] is None
 
 
 def test_merge_new(merge_log_err):
@@ -436,7 +636,6 @@ def test_merge_type_mismatch(merge_log_err):
 def test_merge_once_only(merge_log_err):
     """Test if we have a merge for a comp that may occur only once."""
     packages = {
-        'pack_1': {'homeassistant': {}},
         'pack_2': {
             'mqtt': {},
             'api': {},  # No config schema
@@ -447,7 +646,7 @@ def test_merge_once_only(merge_log_err):
         'mqtt': {}, 'api': {}
     }
     config_util.merge_packages_config(config, packages)
-    assert merge_log_err.call_count == 3
+    assert merge_log_err.call_count == 1
     assert len(config) == 3
 
 
@@ -459,7 +658,7 @@ def test_merge_id_schema(hass):
         'script': 'dict',
         'input_boolean': 'dict',
         'shell_command': 'dict',
-        'qwikswitch': '',
+        'qwikswitch': 'dict',
     }
     for name, expected_type in types.items():
         module = config_util.get_component(name)
@@ -482,3 +681,23 @@ def test_merge_duplicate_keys(merge_log_err):
     assert merge_log_err.call_count == 1
     assert len(config) == 2
     assert len(config['input_select']) == 1
+
+
+@asyncio.coroutine
+def test_merge_customize(hass):
+    """Test loading core config onto hass object."""
+    core_config = {
+        'latitude': 60,
+        'longitude': 50,
+        'elevation': 25,
+        'name': 'Huis',
+        CONF_UNIT_SYSTEM: CONF_UNIT_SYSTEM_IMPERIAL,
+        'time_zone': 'GMT',
+        'customize': {'a.a': {'friendly_name': 'A'}},
+        'packages': {'pkg1': {'homeassistant': {'customize': {
+            'b.b': {'friendly_name': 'BB'}}}}},
+    }
+    yield from config_util.async_process_ha_core_config(hass, core_config)
+
+    assert hass.data[config_util.DATA_CUSTOMIZE].get('b.b') == \
+        {'friendly_name': 'BB'}
