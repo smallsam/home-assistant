@@ -1,8 +1,8 @@
 # coding: utf-8
 """Constants used by Home Assistant components."""
 MAJOR_VERSION = 0
-MINOR_VERSION = 36
-PATCH_VERSION = '1'
+MINOR_VERSION = 37
+PATCH_VERSION = '0.dev0'
 __short_version__ = '{}.{}'.format(MAJOR_VERSION, MINOR_VERSION)
 __version__ = '{}.{}'.format(__short_version__, PATCH_VERSION)
 REQUIRED_PYTHON_VER = (3, 4, 2)
@@ -62,6 +62,7 @@ CONF_AUTHENTICATION = 'authentication'
 CONF_BASE = 'base'
 CONF_BEFORE = 'before'
 CONF_BELOW = 'below'
+CONF_BINARY_SENSORS = 'binary_sensors'
 CONF_BLACKLIST = 'blacklist'
 CONF_BRIGHTNESS = 'brightness'
 CONF_CODE = 'code'
