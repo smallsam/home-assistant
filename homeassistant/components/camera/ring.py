@@ -12,7 +12,8 @@ from datetime import timedelta
 import voluptuous as vol
 
 from homeassistant.helpers import config_validation as cv
-from homeassistant.components.ring import DATA_RING, CONF_ATTRIBUTION
+from homeassistant.components.ring import (
+    DATA_RING, CONF_ATTRIBUTION, NOTIFICATION_ID)
 from homeassistant.components.camera import Camera, PLATFORM_SCHEMA
 from homeassistant.components.ffmpeg import DATA_FFMPEG
 from homeassistant.const import ATTR_ATTRIBUTION, CONF_SCAN_INTERVAL
@@ -27,6 +28,8 @@ FORCE_REFRESH_INTERVAL = timedelta(minutes=45)
 
 _LOGGER = logging.getLogger(__name__)
 
+NOTIFICATION_TITLE = 'Ring Camera Setup'
+
 SCAN_INTERVAL = timedelta(seconds=90)
 
 PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
@@ -36,19 +39,40 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
 })
 
 
-@asyncio.coroutine
-def async_setup_platform(hass, config, async_add_devices, discovery_info=None):
+def setup_platform(hass, config, add_entities, discovery_info=None):
     """Set up a Ring Door Bell and StickUp Camera."""
     ring = hass.data[DATA_RING]
 
     cams = []
+    cams_no_plan = []
     for camera in ring.doorbells:
-        cams.append(RingCam(hass, camera, config))
+        if camera.has_subscription:
+            cams.append(RingCam(hass, camera, config))
+        else:
+            cams_no_plan.append(camera)
 
     for camera in ring.stickup_cams:
-        cams.append(RingCam(hass, camera, config))
+        if camera.has_subscription:
+            cams.append(RingCam(hass, camera, config))
+        else:
+            cams_no_plan.append(camera)
 
-    async_add_devices(cams, True)
+    # show notification for all cameras without an active subscription
+    if cams_no_plan:
+        cameras = str(', '.join([camera.name for camera in cams_no_plan]))
+
+        err_msg = '''A Ring Protect Plan is required for the''' \
+                  ''' following cameras: {}.'''.format(cameras)
+
+        _LOGGER.error(err_msg)
+        hass.components.persistent_notification.create(
+            'Error: {}<br />'
+            'You will need to restart hass after fixing.'
+            ''.format(err_msg),
+            title=NOTIFICATION_TITLE,
+            notification_id=NOTIFICATION_ID)
+
+    add_entities(cams, True)
     return True
 
 
@@ -84,11 +108,9 @@ class RingCam(Camera):
             'timezone': self._camera.timezone,
             'type': self._camera.family,
             'video_url': self._video_url,
-            'video_id': self._last_video_id
         }
 
-    @asyncio.coroutine
-    def async_camera_image(self):
+    async def async_camera_image(self):
         """Return a still image response from the camera."""
         from haffmpeg import ImageFrame, IMAGE_JPEG
         ffmpeg = ImageFrame(self._ffmpeg.binary, loop=self.hass.loop)
@@ -96,13 +118,12 @@ class RingCam(Camera):
         if self._video_url is None:
             return
 
-        image = yield from asyncio.shield(ffmpeg.get_image(
+        image = await asyncio.shield(ffmpeg.get_image(
             self._video_url, output_format=IMAGE_JPEG,
             extra_cmd=self._ffmpeg_arguments), loop=self.hass.loop)
         return image
 
-    @asyncio.coroutine
-    def handle_async_mjpeg_stream(self, request):
+    async def handle_async_mjpeg_stream(self, request):
         """Generate an HTTP MJPEG stream from the camera."""
         from haffmpeg import CameraMjpeg
 
@@ -110,13 +131,13 @@ class RingCam(Camera):
             return
 
         stream = CameraMjpeg(self._ffmpeg.binary, loop=self.hass.loop)
-        yield from stream.open_camera(
+        await stream.open_camera(
             self._video_url, extra_cmd=self._ffmpeg_arguments)
 
-        yield from async_aiohttp_proxy_stream(
+        await async_aiohttp_proxy_stream(
             self.hass, request, stream,
             'multipart/x-mixed-replace;boundary=ffserver')
-        yield from stream.close()
+        await stream.close()
 
     @property
     def should_poll(self):

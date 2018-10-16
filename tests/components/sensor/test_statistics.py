@@ -3,7 +3,8 @@ import unittest
 import statistics
 
 from homeassistant.setup import setup_component
-from homeassistant.const import (ATTR_UNIT_OF_MEASUREMENT, TEMP_CELSIUS)
+from homeassistant.const import (
+    ATTR_UNIT_OF_MEASUREMENT, TEMP_CELSIUS, STATE_UNKNOWN)
 from homeassistant.util import dt as dt_util
 from tests.common import get_test_home_assistant
 from unittest.mock import patch
@@ -16,7 +17,7 @@ class TestStatisticsSensor(unittest.TestCase):
     """Test the Statistics sensor."""
 
     def setup_method(self, method):
-        """Setup things to be run when tests are started."""
+        """Set up things to be run when tests are started."""
         self.hass = get_test_home_assistant()
         self.values = [17, 20, 15.2, 5, 3.8, 9.2, 6.7, 14, 6]
         self.count = len(self.values)
@@ -27,8 +28,10 @@ class TestStatisticsSensor(unittest.TestCase):
         self.median = round(statistics.median(self.values), 2)
         self.deviation = round(statistics.stdev(self.values), 2)
         self.variance = round(statistics.variance(self.values), 2)
-        self.change = self.values[-1] - self.values[0]
-        self.average_change = self.change / (len(self.values) - 1)
+        self.change = round(self.values[-1] - self.values[0], 2)
+        self.average_change = round(self.change / (len(self.values) - 1), 2)
+        self.change_rate = round(self.average_change / (60 * (self.count - 1)),
+                                 2)
 
     def teardown_method(self, method):
         """Stop everything that was started."""
@@ -106,6 +109,38 @@ class TestStatisticsSensor(unittest.TestCase):
         self.assertEqual(3.8, state.attributes.get('min_value'))
         self.assertEqual(14, state.attributes.get('max_value'))
 
+    def test_sampling_size_1(self):
+        """Test validity of stats requiring only one sample."""
+        assert setup_component(self.hass, 'sensor', {
+            'sensor': {
+                'platform': 'statistics',
+                'name': 'test',
+                'entity_id': 'sensor.test_monitored',
+                'sampling_size': 1,
+            }
+        })
+
+        for value in self.values[-3:]:  # just the last 3 will do
+            self.hass.states.set('sensor.test_monitored', value,
+                                 {ATTR_UNIT_OF_MEASUREMENT: TEMP_CELSIUS})
+            self.hass.block_till_done()
+
+        state = self.hass.states.get('sensor.test_mean')
+
+        # require only one data point
+        self.assertEqual(self.values[-1], state.attributes.get('min_value'))
+        self.assertEqual(self.values[-1], state.attributes.get('max_value'))
+        self.assertEqual(self.values[-1], state.attributes.get('mean'))
+        self.assertEqual(self.values[-1], state.attributes.get('median'))
+        self.assertEqual(self.values[-1], state.attributes.get('total'))
+        self.assertEqual(0, state.attributes.get('change'))
+        self.assertEqual(0, state.attributes.get('average_change'))
+
+        # require at least two data points
+        self.assertEqual(STATE_UNKNOWN, state.attributes.get('variance'))
+        self.assertEqual(STATE_UNKNOWN,
+                         state.attributes.get('standard_deviation'))
+
     def test_max_age(self):
         """Test value deprecation."""
         mock_data = {
@@ -137,6 +172,42 @@ class TestStatisticsSensor(unittest.TestCase):
 
         self.assertEqual(6, state.attributes.get('min_value'))
         self.assertEqual(14, state.attributes.get('max_value'))
+
+    def test_change_rate(self):
+        """Test min_age/max_age and change_rate."""
+        mock_data = {
+            'return_time': datetime(2017, 8, 2, 12, 23, 42,
+                                    tzinfo=dt_util.UTC),
+        }
+
+        def mock_now():
+            return mock_data['return_time']
+
+        with patch('homeassistant.components.sensor.statistics.dt_util.utcnow',
+                   new=mock_now):
+            assert setup_component(self.hass, 'sensor', {
+                'sensor': {
+                    'platform': 'statistics',
+                    'name': 'test',
+                    'entity_id': 'sensor.test_monitored'
+                }
+            })
+
+            for value in self.values:
+                self.hass.states.set('sensor.test_monitored', value,
+                                     {ATTR_UNIT_OF_MEASUREMENT: TEMP_CELSIUS})
+                self.hass.block_till_done()
+                # insert the next value one minute later
+                mock_data['return_time'] += timedelta(minutes=1)
+
+            state = self.hass.states.get('sensor.test_mean')
+
+        self.assertEqual(datetime(2017, 8, 2, 12, 23, 42, tzinfo=dt_util.UTC),
+                         state.attributes.get('min_age'))
+        self.assertEqual(datetime(2017, 8, 2, 12, 23 + self.count - 1, 42,
+                                  tzinfo=dt_util.UTC),
+                         state.attributes.get('max_age'))
+        self.assertEqual(self.change_rate, state.attributes.get('change_rate'))
 
     def test_initialize_from_database(self):
         """Test initializing the statistics from the database."""

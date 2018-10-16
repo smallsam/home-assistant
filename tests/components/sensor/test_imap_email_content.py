@@ -17,7 +17,7 @@ class FakeEMailReader:
     """A test class for sending test emails."""
 
     def __init__(self, messages):
-        """Setup the fake email reader."""
+        """Set up the fake email reader."""
         self._messages = messages
 
     def connect(self):
@@ -35,7 +35,7 @@ class EmailContentSensor(unittest.TestCase):
     """Test the IMAP email content sensor."""
 
     def setUp(self):
-        """Setup things to be run when tests are started."""
+        """Set up things to be run when tests are started."""
         self.hass = get_test_home_assistant()
 
     def tearDown(self):
@@ -60,7 +60,9 @@ class EmailContentSensor(unittest.TestCase):
         sensor.entity_id = 'sensor.emailtest'
         sensor.schedule_update_ha_state(True)
         self.hass.block_till_done()
-        self.assertEqual("Test Message", sensor.state)
+        self.assertEqual('Test', sensor.state)
+        self.assertEqual("Test Message",
+                         sensor.device_state_attributes['body'])
         self.assertEqual('sender@test.com',
                          sensor.device_state_attributes['from'])
         self.assertEqual('Test', sensor.device_state_attributes['subject'])
@@ -89,13 +91,15 @@ class EmailContentSensor(unittest.TestCase):
         sensor.entity_id = "sensor.emailtest"
         sensor.schedule_update_ha_state(True)
         self.hass.block_till_done()
-        self.assertEqual("Test Message", sensor.state)
+        self.assertEqual('Link', sensor.state)
+        self.assertEqual("Test Message",
+                         sensor.device_state_attributes['body'])
 
     def test_multi_part_only_html(self):
         """Test multi part emails with only HTML."""
         msg = MIMEMultipart('alternative')
-        msg['Subject'] = "Link"
-        msg['From'] = "sender@test.com"
+        msg['Subject'] = 'Link'
+        msg['From'] = 'sender@test.com'
 
         html = "<html><head></head><body>Test Message</body></html>"
 
@@ -113,9 +117,10 @@ class EmailContentSensor(unittest.TestCase):
         sensor.entity_id = 'sensor.emailtest'
         sensor.schedule_update_ha_state(True)
         self.hass.block_till_done()
+        self.assertEqual('Link', sensor.state)
         self.assertEqual(
             "<html><head></head><body>Test Message</body></html>",
-            sensor.state)
+            sensor.device_state_attributes['body'])
 
     def test_multi_part_only_other_text(self):
         """Test multi part emails with only other text."""
@@ -136,7 +141,9 @@ class EmailContentSensor(unittest.TestCase):
         sensor.entity_id = 'sensor.emailtest'
         sensor.schedule_update_ha_state(True)
         self.hass.block_till_done()
-        self.assertEqual("Test Message", sensor.state)
+        self.assertEqual('Link', sensor.state)
+        self.assertEqual("Test Message",
+                         sensor.device_state_attributes['body'])
 
     def test_multiple_emails(self):
         """Test multiple emails."""
@@ -172,10 +179,11 @@ class EmailContentSensor(unittest.TestCase):
         sensor.schedule_update_ha_state(True)
         self.hass.block_till_done()
 
-        self.assertEqual("Test Message", states[0].state)
-        self.assertEqual("Test Message 2", states[1].state)
+        self.assertEqual("Test", states[0].state)
+        self.assertEqual("Test 2", states[1].state)
 
-        self.assertEqual("Test Message 2", sensor.state)
+        self.assertEqual("Test Message 2",
+                         sensor.device_state_attributes['body'])
 
     def test_sender_not_allowed(self):
         """Test not whitelisted emails."""

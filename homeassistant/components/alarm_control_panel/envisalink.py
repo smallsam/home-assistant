@@ -4,9 +4,7 @@ Support for Envisalink-based alarm control panels (Honeywell/DSC).
 For more details about this platform, please refer to the documentation at
 https://home-assistant.io/components/alarm_control_panel.envisalink/
 """
-import asyncio
 import logging
-import os
 
 import voluptuous as vol
 
@@ -14,7 +12,6 @@ from homeassistant.core import callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 import homeassistant.components.alarm_control_panel as alarm
 import homeassistant.helpers.config_validation as cv
-from homeassistant.config import load_yaml_config_file
 from homeassistant.components.envisalink import (
     DATA_EVL, EnvisalinkDevice, PARTITION_SCHEMA, CONF_CODE, CONF_PANIC,
     CONF_PARTITIONNAME, SIGNAL_KEYPAD_UPDATE, SIGNAL_PARTITION_UPDATE)
@@ -34,8 +31,8 @@ ALARM_KEYPRESS_SCHEMA = vol.Schema({
 })
 
 
-@asyncio.coroutine
-def async_setup_platform(hass, config, async_add_devices, discovery_info=None):
+async def async_setup_platform(hass, config, async_add_entities,
+                               discovery_info=None):
     """Perform the setup for Envisalink alarm panels."""
     configured_partitions = discovery_info['partitions']
     code = discovery_info[CONF_CODE]
@@ -55,7 +52,7 @@ def async_setup_platform(hass, config, async_add_devices, discovery_info=None):
         )
         devices.append(device)
 
-    async_add_devices(devices)
+    async_add_entities(devices)
 
     @callback
     def alarm_keypress_handler(service):
@@ -69,14 +66,9 @@ def async_setup_platform(hass, config, async_add_devices, discovery_info=None):
         for device in target_devices:
             device.async_alarm_keypress(keypress)
 
-    # Register Envisalink specific services
-    descriptions = yield from hass.async_add_job(
-        load_yaml_config_file, os.path.join(
-            os.path.dirname(__file__), 'services.yaml'))
-
     hass.services.async_register(
         alarm.DOMAIN, SERVICE_ALARM_KEYPRESS, alarm_keypress_handler,
-        descriptions.get(SERVICE_ALARM_KEYPRESS), schema=ALARM_KEYPRESS_SCHEMA)
+        schema=ALARM_KEYPRESS_SCHEMA)
 
     return True
 
@@ -94,8 +86,7 @@ class EnvisalinkAlarm(EnvisalinkDevice, alarm.AlarmControlPanel):
         _LOGGER.debug("Setting up alarm: %s", alarm_name)
         super().__init__(alarm_name, info, controller)
 
-    @asyncio.coroutine
-    def async_added_to_hass(self):
+    async def async_added_to_hass(self):
         """Register callbacks."""
         async_dispatcher_connect(
             self.hass, SIGNAL_KEYPAD_UPDATE, self._update_callback)
@@ -113,7 +104,7 @@ class EnvisalinkAlarm(EnvisalinkDevice, alarm.AlarmControlPanel):
         """Regex for code format or None if no code is required."""
         if self._code:
             return None
-        return '^\\d{4,6}$'
+        return 'Number'
 
     @property
     def state(self):
@@ -134,8 +125,7 @@ class EnvisalinkAlarm(EnvisalinkDevice, alarm.AlarmControlPanel):
             state = STATE_ALARM_DISARMED
         return state
 
-    @asyncio.coroutine
-    def async_alarm_disarm(self, code=None):
+    async def async_alarm_disarm(self, code=None):
         """Send disarm command."""
         if code:
             self.hass.data[DATA_EVL].disarm_partition(
@@ -144,8 +134,7 @@ class EnvisalinkAlarm(EnvisalinkDevice, alarm.AlarmControlPanel):
             self.hass.data[DATA_EVL].disarm_partition(
                 str(self._code), self._partition_number)
 
-    @asyncio.coroutine
-    def async_alarm_arm_home(self, code=None):
+    async def async_alarm_arm_home(self, code=None):
         """Send arm home command."""
         if code:
             self.hass.data[DATA_EVL].arm_stay_partition(
@@ -154,8 +143,7 @@ class EnvisalinkAlarm(EnvisalinkDevice, alarm.AlarmControlPanel):
             self.hass.data[DATA_EVL].arm_stay_partition(
                 str(self._code), self._partition_number)
 
-    @asyncio.coroutine
-    def async_alarm_arm_away(self, code=None):
+    async def async_alarm_arm_away(self, code=None):
         """Send arm away command."""
         if code:
             self.hass.data[DATA_EVL].arm_away_partition(
@@ -164,8 +152,7 @@ class EnvisalinkAlarm(EnvisalinkDevice, alarm.AlarmControlPanel):
             self.hass.data[DATA_EVL].arm_away_partition(
                 str(self._code), self._partition_number)
 
-    @asyncio.coroutine
-    def async_alarm_trigger(self, code=None):
+    async def async_alarm_trigger(self, code=None):
         """Alarm trigger command. Will be used to trigger a panic alarm."""
         self.hass.data[DATA_EVL].panic_alarm(self._panic_type)
 

@@ -4,22 +4,22 @@ Support for Prometheus metrics export.
 For more details about this component, please refer to the documentation at
 https://home-assistant.io/components/prometheus/
 """
-import asyncio
 import logging
 
 import voluptuous as vol
 from aiohttp import web
 
+from homeassistant.components.climate import ATTR_CURRENT_TEMPERATURE
 from homeassistant.components.http import HomeAssistantView
-from homeassistant.components import recorder
 from homeassistant.const import (
-    CONF_DOMAINS, CONF_ENTITIES, CONF_EXCLUDE, CONF_INCLUDE, TEMP_CELSIUS,
-    EVENT_STATE_CHANGED, TEMP_FAHRENHEIT, CONTENT_TYPE_TEXT_PLAIN)
+    EVENT_STATE_CHANGED, TEMP_FAHRENHEIT, CONTENT_TYPE_TEXT_PLAIN,
+    ATTR_TEMPERATURE, ATTR_UNIT_OF_MEASUREMENT)
 from homeassistant import core as hacore
-from homeassistant.helpers import state as state_helper
+import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers import entityfilter, state as state_helper
 from homeassistant.util.temperature import fahrenheit_to_celsius
 
-REQUIREMENTS = ['prometheus_client==0.0.19']
+REQUIREMENTS = ['prometheus_client==0.2.0']
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -28,8 +28,14 @@ API_ENDPOINT = '/api/prometheus'
 DOMAIN = 'prometheus'
 DEPENDENCIES = ['http']
 
+CONF_FILTER = 'filter'
+CONF_PROM_NAMESPACE = 'namespace'
+
 CONFIG_SCHEMA = vol.Schema({
-    DOMAIN: recorder.FILTER_SCHEMA,
+    DOMAIN: vol.All({
+        vol.Optional(CONF_FILTER, default={}): entityfilter.FILTER_SCHEMA,
+        vol.Optional(CONF_PROM_NAMESPACE): cv.string,
+    })
 }, extra=vol.ALLOW_EXTRA)
 
 
@@ -39,26 +45,31 @@ def setup(hass, config):
 
     hass.http.register_view(PrometheusView(prometheus_client))
 
-    conf = config.get(DOMAIN, {})
-    exclude = conf.get(CONF_EXCLUDE, {})
-    include = conf.get(CONF_INCLUDE, {})
-    metrics = Metrics(prometheus_client, exclude, include)
+    conf = config[DOMAIN]
+    entity_filter = conf[CONF_FILTER]
+    namespace = conf.get(CONF_PROM_NAMESPACE)
+    climate_units = hass.config.units.temperature_unit
+    metrics = PrometheusMetrics(prometheus_client, entity_filter, namespace,
+                                climate_units)
 
     hass.bus.listen(EVENT_STATE_CHANGED, metrics.handle_event)
     return True
 
 
-class Metrics(object):
+class PrometheusMetrics:
     """Model all of the metrics which should be exposed to Prometheus."""
 
-    def __init__(self, prometheus_client, exclude, include):
+    def __init__(self, prometheus_client, entity_filter, namespace,
+                 climate_units):
         """Initialize Prometheus Metrics."""
         self.prometheus_client = prometheus_client
-        self.exclude = exclude.get(CONF_ENTITIES, []) + \
-            exclude.get(CONF_DOMAINS, [])
-        self.include_domains = include.get(CONF_DOMAINS, [])
-        self.include_entities = include.get(CONF_ENTITIES, [])
+        self._filter = entity_filter
+        if namespace:
+            self.metrics_prefix = "{}_".format(namespace)
+        else:
+            self.metrics_prefix = ""
         self._metrics = {}
+        self._climate_units = climate_units
 
     def handle_event(self, event):
         """Listen for new messages on the bus, and add them to Prometheus."""
@@ -70,14 +81,7 @@ class Metrics(object):
         _LOGGER.debug("Handling state update for %s", entity_id)
         domain, _ = hacore.split_entity_id(entity_id)
 
-        if entity_id in self.exclude:
-            return
-        if domain in self.exclude and entity_id not in self.include_entities:
-            return
-        if self.include_domains and domain not in self.include_domains:
-            return
-        if not self.exclude and (self.include_entities and
-                                 entity_id not in self.include_entities):
+        if not self._filter(state.entity_id):
             return
 
         handler = '_handle_{}'.format(domain)
@@ -85,20 +89,30 @@ class Metrics(object):
         if hasattr(self, handler):
             getattr(self, handler)(state)
 
+        metric = self._metric(
+            'state_change',
+            self.prometheus_client.Counter,
+            'The number of state changes',
+        )
+        metric.labels(**self._labels(state)).inc()
+
     def _metric(self, metric, factory, documentation, labels=None):
         if labels is None:
-            labels = ['entity', 'friendly_name']
+            labels = ['entity', 'friendly_name', 'domain']
 
         try:
             return self._metrics[metric]
         except KeyError:
-            self._metrics[metric] = factory(metric, documentation, labels)
+            full_metric_name = "{}{}".format(self.metrics_prefix, metric)
+            self._metrics[metric] = factory(
+                full_metric_name, documentation, labels)
             return self._metrics[metric]
 
     @staticmethod
     def _labels(state):
         return {
             'entity': state.entity_id,
+            'domain': state.domain,
             'friendly_name': state.attributes.get('friendly_name'),
         }
 
@@ -159,50 +173,58 @@ class Metrics(object):
         value = state_helper.state_as_number(state)
         metric.labels(**self._labels(state)).set(value)
 
+    def _handle_climate(self, state):
+        temp = state.attributes.get(ATTR_TEMPERATURE)
+        if temp:
+            if self._climate_units == TEMP_FAHRENHEIT:
+                temp = fahrenheit_to_celsius(temp)
+            metric = self._metric(
+                'temperature_c', self.prometheus_client.Gauge,
+                'Temperature in degrees Celsius')
+            metric.labels(**self._labels(state)).set(temp)
+
+        current_temp = state.attributes.get(ATTR_CURRENT_TEMPERATURE)
+        if current_temp:
+            if self._climate_units == TEMP_FAHRENHEIT:
+                current_temp = fahrenheit_to_celsius(current_temp)
+            metric = self._metric(
+                'current_temperature_c', self.prometheus_client.Gauge,
+                'Current Temperature in degrees Celsius')
+            metric.labels(**self._labels(state)).set(current_temp)
+
+        metric = self._metric(
+            'climate_state', self.prometheus_client.Gauge,
+            'State of the thermostat (0/1)')
+        try:
+            value = state_helper.state_as_number(state)
+            metric.labels(**self._labels(state)).set(value)
+        except ValueError:
+            pass
+
     def _handle_sensor(self, state):
-        _sensor_types = {
-            TEMP_CELSIUS: (
-                'temperature_c', self.prometheus_client.Gauge,
-                'Temperature in degrees Celsius',
-            ),
-            TEMP_FAHRENHEIT: (
-                'temperature_c', self.prometheus_client.Gauge,
-                'Temperature in degrees Celsius',
-            ),
-            '%': (
-                'relative_humidity', self.prometheus_client.Gauge,
-                'Relative humidity (0..100)',
-            ),
-            'lux': (
-                'light_lux', self.prometheus_client.Gauge,
-                'Light level in lux',
-            ),
-            'kWh': (
-                'electricity_used_kwh', self.prometheus_client.Gauge,
-                'Electricity used by this device in KWh',
-            ),
-            'V': (
-                'voltage', self.prometheus_client.Gauge,
-                'Currently reported voltage in Volts',
-            ),
-            'W': (
-                'electricity_usage_w', self.prometheus_client.Gauge,
-                'Currently reported electricity draw in Watts',
-            ),
-        }
 
-        unit = state.attributes.get('unit_of_measurement')
-        metric = _sensor_types.get(unit)
+        unit = state.attributes.get(ATTR_UNIT_OF_MEASUREMENT)
+        metric = state.entity_id.split(".")[1]
 
-        if metric is not None:
-            metric = self._metric(*metric)
-            try:
-                value = state_helper.state_as_number(state)
-                if unit == TEMP_FAHRENHEIT:
-                    value = fahrenheit_to_celsius(value)
-                metric.labels(**self._labels(state)).set(value)
-            except ValueError:
-                pass
+        if '_' not in str(metric):
+            metric = state.entity_id.replace('.', '_')
+
+        try:
+            int(metric.split("_")[-1])
+            metric = "_".join(metric.split("_")[:-1])
+        except ValueError:
+            pass
+
+        _metric = self._metric(metric, self.prometheus_client.Gauge,
+                               state.entity_id)
+
+        try:
+            value = state_helper.state_as_number(state)
+            if unit == TEMP_FAHRENHEIT:
+                value = fahrenheit_to_celsius(value)
+            _metric.labels(**self._labels(state)).set(value)
+        except ValueError:
+            pass
 
         self._battery(state)
 
@@ -212,11 +234,24 @@ class Metrics(object):
             self.prometheus_client.Gauge,
             'State of the switch (0/1)',
         )
-        value = state_helper.state_as_number(state)
-        metric.labels(**self._labels(state)).set(value)
+
+        try:
+            value = state_helper.state_as_number(state)
+            metric.labels(**self._labels(state)).set(value)
+        except ValueError:
+            pass
 
     def _handle_zwave(self, state):
         self._battery(state)
+
+    def _handle_automation(self, state):
+        metric = self._metric(
+            'automation_triggered_count',
+            self.prometheus_client.Counter,
+            'Count of times an automation has been triggered',
+        )
+
+        metric.labels(**self._labels(state)).inc()
 
 
 class PrometheusView(HomeAssistantView):
@@ -229,8 +264,7 @@ class PrometheusView(HomeAssistantView):
         """Initialize Prometheus view."""
         self.prometheus_client = prometheus_client
 
-    @asyncio.coroutine
-    def get(self, request):
+    async def get(self, request):
         """Handle request for Prometheus metrics."""
         _LOGGER.debug("Received Prometheus metrics request")
 

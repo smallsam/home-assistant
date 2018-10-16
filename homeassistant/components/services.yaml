@@ -32,55 +32,6 @@ foursquare:
         description: Vertical accuracy of the user's location, in meters.
         example: 1
 
-homematic:
-  virtualkey:
-    description: Press a virtual key from CCU/Homegear or simulate keypress.
-    fields:
-      address:
-        description: Address of homematic device or BidCoS-RF for virtual remote.
-        example: BidCoS-RF
-      channel:
-        description: Channel for calling a keypress.
-        example: 1
-      param:
-        description: Event to send i.e. PRESS_LONG, PRESS_SHORT.
-        example: PRESS_LONG
-      proxy:
-        description: (Optional) for set a hosts value.
-        example: Hosts name from config
-  set_var_value:
-    description: Set the name of a node.
-    fields:
-      entity_id:
-        description: Name(s) of homematic central to set value.
-        example: 'homematic.ccu2'
-      name:
-        description: Name of the variable to set.
-        example: 'testvariable'
-      value:
-        description: New value
-        example: 1
-  set_dev_value:
-    description: Set a device property on RPC XML interface.
-    fields:
-      address:
-        description: Address of homematic device or BidCoS-RF for virtual remote
-        example: BidCoS-RF
-      channel:
-        description: Channel for calling a keypress
-        example: 1
-      param:
-        description: Event to send i.e. PRESS_LONG, PRESS_SHORT
-        example: PRESS_LONG
-      proxy:
-        description: (Optional) for set a hosts value
-        example: Hosts name from config
-      value:
-        description: New value
-        example: 1
-  reconnect:
-    description: Reconnect to all Homematic Hubs.
-
 microsoft_face:
   create_group:
     description: Create a new person group.
@@ -224,6 +175,12 @@ ffmpeg:
         example: 'binary_sensor.ffmpeg_noise'
 
 logger:
+  set_default_level:
+    description: Set the default log level for components.
+    fields:
+      level:
+        description: Default severity level. Possible values are notset, debug, info, warn, warning, error, fatal, critical
+        example: 'debug'
   set_level:
     description: Set log level for components.
 
@@ -413,6 +370,50 @@ abode:
         description: Entity id of the quick action to trigger.
         example: 'binary_sensor.home_quick_action'
 
+snips:
+  say:
+    description: Send a TTS message to Snips.
+    fields:
+      text:
+        description: Text to say.
+        example: My name is snips
+      site_id:
+        description: Site to use to start session, defaults to default (optional)
+        example: bedroom
+      custom_data:
+        description: custom data that will be included with all messages in this session
+        example: user=UserName
+  say_action:
+    description: Send a TTS message to Snips to listen for a response.
+    fields:
+      text:
+        description: Text to say
+        example: My name is snips
+      site_id:
+        description: Site to use to start session, defaults to default (optional)
+        example: bedroom
+      custom_data:
+        description: custom data that will be included with all messages in this session
+        example: user=UserName
+      can_be_enqueued:
+        description: If True, session waits for an open session to end, if False session is dropped if one is running
+        example: True
+      intent_filter:
+        description: Optional Array of Strings - A list of intents names to restrict the NLU resolution to on the first query.
+        example: turnOnLights, turnOffLights
+  feedback_on:
+    description: Turns feedback sounds on.
+    fields:
+      site_id:
+        description: Site to turn sounds on, defaults to all sites (optional)
+        example: bedroom
+  feedback_off:
+    description: Turns feedback sounds off.
+    fields:
+      site_id:
+        description: Site to turn sounds on, defaults to all sites (optional)
+        example: bedroom
+
 input_boolean:
   toggle:
     description: Toggles an input boolean.
@@ -437,7 +438,7 @@ input_text:
   set_value:
     description: Set the value of an input text entity.
     fields:
-      entity_id: 
+      entity_id:
         description: Entity id of the input text to set the new value.
         example: 'input_text.text1'
       value:
@@ -448,7 +449,7 @@ input_number:
   set_value:
     description: Set the value of an input number entity.
     fields:
-      entity_id: 
+      entity_id:
         description: Entity id of the input number to set the new value.
         example: 'input_number.threshold'
       value:
@@ -457,15 +458,47 @@ input_number:
   increment:
     description: Increment the value of an input number entity by its stepping.
     fields:
-      entity_id: 
+      entity_id:
         description: Entity id of the input number the should be incremented.
         example: 'input_number.threshold'
   decrement:
     description: Decrement the value of an input number entity by its stepping.
     fields:
-      entity_id: 
+      entity_id:
         description: Entity id of the input number the should be decremented.
         example: 'input_number.threshold'
+
+input_select:
+  select_option:
+    description: Select an option of an input select entity.
+    fields:
+      entity_id:
+        description: Entity id of the input select to select the value.
+        example: 'input_select.my_select'
+      option:
+        description: Option to be selected.
+        example: '"Item A"'
+  set_options:
+    description: Set the options of an input select entity.
+    fields:
+      entity_id:
+        description: Entity id of the input select to set the new options for.
+        example: 'input_select.my_select'
+      options:
+        description: Options for the input select entity.
+        example: '["Item A", "Item B", "Item C"]'
+  select_previous:
+    description: Select the previous options of an input select entity.
+    fields:
+      entity_id:
+        description: Entity id of the input select to select the previous value for.
+        example: 'input_select.my_select'
+  select_next:
+    description: Select the next options of an input select entity.
+    fields:
+      entity_id:
+        description: Entity id of the input select to select the next value for.
+        example: 'input_select.my_select'
 
 homeassistant:
   check_config:
@@ -473,9 +506,9 @@ homeassistant:
   reload_core_config:
     description: Reload the core configuration.
   restart:
-    description: Restart the Home Assistant service. It is normal to get a "Failed to call service homeassistant/restart" message.
+    description: Restart the Home Assistant service.
   stop:
-    description: Stop the Home Assistant service. It is normal to get a "Failed to call service homeassistant/stop" message.
+    description: Stop the Home Assistant service.
   toggle:
     description: Generic service to toggle devices on/off under any domain. Same usage as the light.turn_on, switch.turn_on, etc. services.
     fields:
@@ -494,3 +527,77 @@ homeassistant:
       entity_id:
         description: The entity_id of the device to turn off.
         example: light.living_room
+
+xiaomi_aqara:
+  play_ringtone:
+    description: Play a specific ringtone. The version of the gateway firmware must be 1.4.1_145 at least.
+    fields:
+      gw_mac:
+        description: MAC address of the Xiaomi Aqara Gateway.
+        example: 34ce00880088
+      ringtone_id:
+        description: One of the allowed ringtone ids.
+        example: 8
+      ringtone_vol:
+        description: The volume in percent.
+        example: 30
+  stop_ringtone:
+    description: Stops a playing ringtone immediately.
+    fields:
+      gw_mac:
+        description: MAC address of the Xiaomi Aqara Gateway.
+        example: 34ce00880088
+  add_device:
+    description: Enables the join permission of the Xiaomi Aqara Gateway for 30 seconds. A new device can be added afterwards by pressing the pairing button once.
+    fields:
+      gw_mac:
+        description: MAC address of the Xiaomi Aqara Gateway.
+        example: 34ce00880088
+  remove_device:
+    description: Removes a specific device. The removal is required if a device shall be paired with another gateway.
+    fields:
+      gw_mac:
+        description: MAC address of the Xiaomi Aqara Gateway.
+        example: 34ce00880088
+      device_id:
+        description: Hardware address of the device to remove.
+        example: 158d0000000000
+
+shopping_list:
+  add_item:
+    description: Adds an item to the shopping list.
+    fields:
+      name:
+        description: The name of the item to add.
+        example: Beer
+  complete_item:
+    description: Marks an item as completed in the shopping list. It does not remove the item.
+    fields:
+      name:
+        description: The name of the item to mark as completed.
+        example: Beer
+
+nest:
+  set_mode:
+    description: >
+                  Set the home/away mode for a Nest structure.
+                  Set to away mode will also set Estimated Arrival Time if provided.
+                  Set ETA will cause the thermostat to begin warming or cooling the home before the user arrives.
+                  After ETA set other Automation can read ETA sensor as a signal to prepare the home for
+                  the user's arrival.
+    fields:
+      home_mode:
+        description: home or away
+        example: home
+      structure:
+        description: Optional structure name. Default set all structures managed by Home Assistant.
+        example: My Home
+      eta:
+        description: Optional Estimated Arrival Time from now.
+        example: 0:10
+      eta_window:
+        description: Optional ETA window. Default is 1 minute.
+        example: 0:5
+      trip_id:
+        description: Optional identity of a trip. Using the same trip_ID will update the estimation.
+        example: trip_back_home

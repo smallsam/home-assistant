@@ -39,7 +39,7 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
 })
 
 
-def setup_platform(hass, config, add_devices, discovery_info=None):
+def setup_platform(hass, config, add_entities, discovery_info=None):
     """Set up the Email sensor platform."""
     reader = EmailReader(
         config.get(CONF_USERNAME), config.get(CONF_PASSWORD),
@@ -53,12 +53,12 @@ def setup_platform(hass, config, add_devices, discovery_info=None):
         config.get(CONF_SENDERS), value_template)
 
     if sensor.connected:
-        add_devices([sensor], True)
+        add_entities([sensor], True)
     else:
         return False
 
 
-class EmailReader(object):
+class EmailReader:
     """A class to read emails from an IMAP server."""
 
     def __init__(self, user, password, server, port):
@@ -87,6 +87,8 @@ class EmailReader(object):
         _, message_data = self.connection.uid(
             'fetch', message_uid, '(RFC822)')
 
+        if message_data is None:
+            return None
         raw_email = message_data[0][1]
         email_message = email.message_from_bytes(raw_email)
         return email_message
@@ -219,17 +221,19 @@ class EmailContentSensor(Entity):
             return
 
         if self.sender_allowed(email_message):
-            message_body = EmailContentSensor.get_msg_text(email_message)
+            message = EmailContentSensor.get_msg_subject(email_message)
 
             if self._value_template is not None:
-                message_body = self.render_template(email_message)
+                message = self.render_template(email_message)
 
-            self._message = message_body
+            self._message = message
             self._state_attributes = {
                 ATTR_FROM:
                     EmailContentSensor.get_msg_sender(email_message),
                 ATTR_SUBJECT:
                     EmailContentSensor.get_msg_subject(email_message),
                 ATTR_DATE:
-                    email_message['Date']
+                    email_message['Date'],
+                ATTR_BODY:
+                    EmailContentSensor.get_msg_text(email_message)
             }

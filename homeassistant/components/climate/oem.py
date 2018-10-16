@@ -14,7 +14,8 @@ import voluptuous as vol
 
 # Import the device class from the component that you want to support
 from homeassistant.components.climate import (
-    ClimateDevice, PLATFORM_SCHEMA, STATE_HEAT, STATE_IDLE, ATTR_TEMPERATURE)
+    ClimateDevice, PLATFORM_SCHEMA, STATE_HEAT, STATE_IDLE, ATTR_TEMPERATURE,
+    SUPPORT_TARGET_TEMPERATURE, SUPPORT_AWAY_MODE)
 from homeassistant.const import (CONF_HOST, CONF_USERNAME, CONF_PASSWORD,
                                  CONF_PORT, TEMP_CELSIUS, CONF_NAME)
 import homeassistant.helpers.config_validation as cv
@@ -34,8 +35,10 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
     vol.Optional(CONF_AWAY_TEMP, default=14): vol.Coerce(float)
 })
 
+SUPPORT_FLAGS = SUPPORT_TARGET_TEMPERATURE | SUPPORT_AWAY_MODE
 
-def setup_platform(hass, config, add_devices, discovery_info=None):
+
+def setup_platform(hass, config, add_entities, discovery_info=None):
     """Set up the oemthermostat platform."""
     from oemthermostat import Thermostat
 
@@ -52,11 +55,11 @@ def setup_platform(hass, config, add_devices, discovery_info=None):
     except (ValueError, AssertionError, requests.RequestException):
         return False
 
-    add_devices((ThermostatDevice(hass, therm, name, away_temp), ), True)
+    add_entities((ThermostatDevice(hass, therm, name, away_temp), ), True)
 
 
 class ThermostatDevice(ClimateDevice):
-    """Interface class for the oemthermostat modul."""
+    """Interface class for the oemthermostat module."""
 
     def __init__(self, hass, thermostat, name, away_temp):
         """Initialize the device."""
@@ -76,6 +79,11 @@ class ThermostatDevice(ClimateDevice):
         self._state = None
         self._temperature = None
         self._setpoint = None
+
+    @property
+    def supported_features(self):
+        """Return the list of supported features."""
+        return SUPPORT_FLAGS
 
     @property
     def name(self):

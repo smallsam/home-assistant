@@ -4,7 +4,6 @@ Support for ZigBee devices.
 For more details about this component, please refer to the documentation at
 https://home-assistant.io/components/zigbee/
 """
-import asyncio
 import logging
 from binascii import hexlify, unhexlify
 
@@ -124,7 +123,7 @@ def frame_is_relevant(entity, frame):
     return True
 
 
-class ZigBeeConfig(object):
+class ZigBeeConfig:
     """Handle the fetching of configuration from the config file."""
 
     def __init__(self, config):
@@ -277,8 +276,7 @@ class ZigBeeDigitalIn(Entity):
         self._config = config
         self._state = False
 
-    @asyncio.coroutine
-    def async_added_to_hass(self):
+    async def async_added_to_hass(self):
         """Register callbacks."""
         def handle_frame(frame):
             """Handle an incoming frame.
@@ -288,12 +286,15 @@ class ZigBeeDigitalIn(Entity):
             """
             if not frame_is_relevant(self, frame):
                 return
-            sample = frame['samples'].pop()
+            sample = next(iter(frame['samples']))
             pin_name = DIGITAL_PINS[self._config.pin]
             if pin_name not in sample:
                 # Doesn't contain information about our pin
                 return
-            self._state = self._config.state2bool[sample[pin_name]]
+            # Set state to the value of sample, respecting any inversion
+            # logic from the on_state config variable.
+            self._state = self._config.state2bool[
+                self._config.bool2state[sample[pin_name]]]
             self.schedule_update_ha_state()
 
         async_dispatcher_connect(
@@ -400,8 +401,7 @@ class ZigBeeAnalogIn(Entity):
         self._config = config
         self._value = None
 
-    @asyncio.coroutine
-    def async_added_to_hass(self):
+    async def async_added_to_hass(self):
         """Register callbacks."""
         def handle_frame(frame):
             """Handle an incoming frame.

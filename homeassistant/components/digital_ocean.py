@@ -13,7 +13,7 @@ from homeassistant.const import CONF_ACCESS_TOKEN
 from homeassistant.util import Throttle
 import homeassistant.helpers.config_validation as cv
 
-REQUIREMENTS = ['python-digitalocean==1.12']
+REQUIREMENTS = ['python-digitalocean==1.13.2']
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -27,6 +27,7 @@ ATTR_MEMORY = 'memory'
 ATTR_REGION = 'region'
 ATTR_VCPUS = 'vcpus'
 
+CONF_ATTRIBUTION = 'Data provided by Digital Ocean'
 CONF_DROPLETS = 'droplets'
 
 DATA_DIGITAL_OCEAN = 'data_do'
@@ -44,13 +45,19 @@ CONFIG_SCHEMA = vol.Schema({
 
 def setup(hass, config):
     """Set up the Digital Ocean component."""
+    import digitalocean
+
     conf = config[DOMAIN]
     access_token = conf.get(CONF_ACCESS_TOKEN)
 
     digital = DigitalOcean(access_token)
 
-    if not digital.manager.get_account():
-        _LOGGER.error("No Digital Ocean account found for the given API Token")
+    try:
+        if not digital.manager.get_account():
+            _LOGGER.error("No account found for the given API token")
+            return False
+    except digitalocean.baseapi.DataReadError:
+        _LOGGER.error("API token not valid for authentication")
         return False
 
     hass.data[DATA_DIGITAL_OCEAN] = digital
@@ -58,7 +65,7 @@ def setup(hass, config):
     return True
 
 
-class DigitalOcean(object):
+class DigitalOcean:
     """Handle all communication with the Digital Ocean API."""
 
     def __init__(self, access_token):

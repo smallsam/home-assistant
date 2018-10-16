@@ -6,12 +6,10 @@ https://home-assistant.io/components/modbus/
 """
 import logging
 import threading
-import os
 
 import voluptuous as vol
 
 import homeassistant.helpers.config_validation as cv
-from homeassistant.config import load_yaml_config_file
 from homeassistant.const import (
     EVENT_HOMEASSISTANT_START, EVENT_HOMEASSISTANT_STOP,
     CONF_HOST, CONF_METHOD, CONF_PORT, CONF_TYPE, CONF_TIMEOUT, ATTR_STATE)
@@ -40,7 +38,7 @@ SERIAL_SCHEMA = {
 ETHERNET_SCHEMA = {
     vol.Required(CONF_HOST): cv.string,
     vol.Required(CONF_PORT): cv.positive_int,
-    vol.Required(CONF_TYPE): vol.Any('tcp', 'udp'),
+    vol.Required(CONF_TYPE): vol.Any('tcp', 'udp', 'rtuovertcp'),
     vol.Optional(CONF_TIMEOUT, default=3): cv.socket_timeout,
 }
 
@@ -77,11 +75,10 @@ HUB = None
 def setup(hass, config):
     """Set up Modbus component."""
     # Modbus connection type
-    # pylint: disable=global-statement, import-error
     client_type = config[DOMAIN][CONF_TYPE]
 
     # Connect to Modbus network
-    # pylint: disable=global-statement, import-error
+    # pylint: disable=import-error
 
     if client_type == 'serial':
         from pymodbus.client.sync import ModbusSerialClient as ModbusClient
@@ -91,6 +88,13 @@ def setup(hass, config):
                               stopbits=config[DOMAIN][CONF_STOPBITS],
                               bytesize=config[DOMAIN][CONF_BYTESIZE],
                               parity=config[DOMAIN][CONF_PARITY],
+                              timeout=config[DOMAIN][CONF_TIMEOUT])
+    elif client_type == 'rtuovertcp':
+        from pymodbus.client.sync import ModbusTcpClient as ModbusClient
+        from pymodbus.transaction import ModbusRtuFramer as ModbusFramer
+        client = ModbusClient(host=config[DOMAIN][CONF_HOST],
+                              port=config[DOMAIN][CONF_PORT],
+                              framer=ModbusFramer,
                               timeout=config[DOMAIN][CONF_TIMEOUT])
     elif client_type == 'tcp':
         from pymodbus.client.sync import ModbusTcpClient as ModbusClient
@@ -117,17 +121,12 @@ def setup(hass, config):
         HUB.connect()
         hass.bus.listen_once(EVENT_HOMEASSISTANT_STOP, stop_modbus)
 
-        descriptions = load_yaml_config_file(os.path.join(
-            os.path.dirname(__file__), 'services.yaml')).get(DOMAIN)
-
         # Register services for modbus
         hass.services.register(
             DOMAIN, SERVICE_WRITE_REGISTER, write_register,
-            descriptions.get(SERVICE_WRITE_REGISTER),
             schema=SERVICE_WRITE_REGISTER_SCHEMA)
         hass.services.register(
             DOMAIN, SERVICE_WRITE_COIL, write_coil,
-            descriptions.get(SERVICE_WRITE_COIL),
             schema=SERVICE_WRITE_COIL_SCHEMA)
 
     def write_register(service):
@@ -158,7 +157,7 @@ def setup(hass, config):
     return True
 
 
-class ModbusHub(object):
+class ModbusHub:
     """Thread safe wrapper class for pymodbus."""
 
     def __init__(self, modbus_client):

@@ -29,7 +29,7 @@ class TestComponentsDeviceTrackerJSONMQTT(unittest.TestCase):
     """Test JSON MQTT device tracker platform."""
 
     def setUp(self):  # pylint: disable=invalid-name
-        """Setup things to be run when tests are started."""
+        """Set up things to be run when tests are started."""
         self.hass = get_test_home_assistant()
         mock_mqtt_component(self.hass)
 
@@ -41,8 +41,7 @@ class TestComponentsDeviceTrackerJSONMQTT(unittest.TestCase):
         except FileNotFoundError:
             pass
 
-    def test_ensure_device_tracker_platform_validation(self): \
-            # pylint: disable=invalid-name
+    def test_ensure_device_tracker_platform_validation(self):
         """Test if platform validation was done."""
         @asyncio.coroutine
         def mock_setup_scanner(hass, config, see, discovery_info=None):
@@ -123,3 +122,77 @@ class TestComponentsDeviceTrackerJSONMQTT(unittest.TestCase):
                 "Skipping update for following data because of missing "
                 "or malformatted data: {\"longitude\": 2.0}",
                 test_handle.output[0])
+
+    def test_single_level_wildcard_topic(self):
+        """Test single level wildcard topic."""
+        dev_id = 'zanzito'
+        subscription = 'location/+/zanzito'
+        topic = 'location/room/zanzito'
+        location = json.dumps(LOCATION_MESSAGE)
+
+        assert setup_component(self.hass, device_tracker.DOMAIN, {
+            device_tracker.DOMAIN: {
+                CONF_PLATFORM: 'mqtt_json',
+                'devices': {dev_id: subscription}
+            }
+        })
+        fire_mqtt_message(self.hass, topic, location)
+        self.hass.block_till_done()
+        state = self.hass.states.get('device_tracker.zanzito')
+        self.assertEqual(state.attributes.get('latitude'), 2.0)
+        self.assertEqual(state.attributes.get('longitude'), 1.0)
+
+    def test_multi_level_wildcard_topic(self):
+        """Test multi level wildcard topic."""
+        dev_id = 'zanzito'
+        subscription = 'location/#'
+        topic = 'location/zanzito'
+        location = json.dumps(LOCATION_MESSAGE)
+
+        assert setup_component(self.hass, device_tracker.DOMAIN, {
+            device_tracker.DOMAIN: {
+                CONF_PLATFORM: 'mqtt_json',
+                'devices': {dev_id: subscription}
+            }
+        })
+        fire_mqtt_message(self.hass, topic, location)
+        self.hass.block_till_done()
+        state = self.hass.states.get('device_tracker.zanzito')
+        self.assertEqual(state.attributes.get('latitude'), 2.0)
+        self.assertEqual(state.attributes.get('longitude'), 1.0)
+
+    def test_single_level_wildcard_topic_not_matching(self):
+        """Test not matching single level wildcard topic."""
+        dev_id = 'zanzito'
+        entity_id = device_tracker.ENTITY_ID_FORMAT.format(dev_id)
+        subscription = 'location/+/zanzito'
+        topic = 'location/zanzito'
+        location = json.dumps(LOCATION_MESSAGE)
+
+        assert setup_component(self.hass, device_tracker.DOMAIN, {
+            device_tracker.DOMAIN: {
+                CONF_PLATFORM: 'mqtt_json',
+                'devices': {dev_id: subscription}
+            }
+        })
+        fire_mqtt_message(self.hass, topic, location)
+        self.hass.block_till_done()
+        self.assertIsNone(self.hass.states.get(entity_id))
+
+    def test_multi_level_wildcard_topic_not_matching(self):
+        """Test not matching multi level wildcard topic."""
+        dev_id = 'zanzito'
+        entity_id = device_tracker.ENTITY_ID_FORMAT.format(dev_id)
+        subscription = 'location/#'
+        topic = 'somewhere/zanzito'
+        location = json.dumps(LOCATION_MESSAGE)
+
+        assert setup_component(self.hass, device_tracker.DOMAIN, {
+            device_tracker.DOMAIN: {
+                CONF_PLATFORM: 'mqtt_json',
+                'devices': {dev_id: subscription}
+            }
+        })
+        fire_mqtt_message(self.hass, topic, location)
+        self.hass.block_till_done()
+        self.assertIsNone(self.hass.states.get(entity_id))

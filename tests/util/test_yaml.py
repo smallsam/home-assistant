@@ -48,7 +48,7 @@ class TestYaml(unittest.TestCase):
             load_yaml_config_file(YAML_CONFIG_FILE)
 
     def test_no_key(self):
-        """Test item without an key."""
+        """Test item without a key."""
         files = {YAML_CONFIG_FILE: 'a: a\nnokeyhere'}
         with self.assertRaises(HomeAssistantError), \
                 patch_yaml_files(files):
@@ -410,6 +410,22 @@ class TestSecrets(unittest.TestCase):
         load_yaml(self._yaml_path, 'api_password: !secret pw')
         assert mock_error.call_count == 1, \
             "Expected an error about logger: value"
+
+    def test_secrets_are_not_dict(self):
+        """Did secrets handle non-dict file."""
+        FILES[self._secret_path] = (
+                  '- http_pw: pwhttp\n'
+                  '  comp1_un: un1\n'
+                  '  comp1_pw: pw1\n')
+        yaml.clear_secret_cache()
+        with self.assertRaises(HomeAssistantError):
+            load_yaml(self._yaml_path,
+                      'http:\n'
+                      '  api_password: !secret http_pw\n'
+                      'component:\n'
+                      '  username: !secret comp1_un\n'
+                      '  password: !secret comp1_pw\n'
+                      '')
 
 
 def test_representing_yaml_loaded_data():

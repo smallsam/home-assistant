@@ -4,28 +4,25 @@ A sensor that monitors trends in other components.
 For more details about this platform, please refer to the documentation at
 https://home-assistant.io/components/sensor.trend/
 """
-import asyncio
 from collections import deque
 import logging
 import math
 
 import voluptuous as vol
 
+from homeassistant.components.binary_sensor import (
+    DEVICE_CLASSES_SCHEMA, ENTITY_ID_FORMAT, PLATFORM_SCHEMA,
+    BinarySensorDevice)
+from homeassistant.const import (
+    ATTR_ENTITY_ID, ATTR_FRIENDLY_NAME, CONF_DEVICE_CLASS, CONF_ENTITY_ID,
+    CONF_FRIENDLY_NAME, STATE_UNKNOWN)
 from homeassistant.core import callback
 import homeassistant.helpers.config_validation as cv
-
-from homeassistant.components.binary_sensor import (
-    BinarySensorDevice, ENTITY_ID_FORMAT, PLATFORM_SCHEMA,
-    DEVICE_CLASSES_SCHEMA)
-from homeassistant.const import (
-    ATTR_ENTITY_ID, ATTR_FRIENDLY_NAME,
-    CONF_DEVICE_CLASS, CONF_ENTITY_ID, CONF_FRIENDLY_NAME,
-    STATE_UNKNOWN)
 from homeassistant.helpers.entity import generate_entity_id
 from homeassistant.helpers.event import async_track_state_change
 from homeassistant.util import utcnow
 
-REQUIREMENTS = ['numpy==1.13.3']
+REQUIREMENTS = ['numpy==1.15.2']
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -36,21 +33,21 @@ ATTR_INVERT = 'invert'
 ATTR_SAMPLE_DURATION = 'sample_duration'
 ATTR_SAMPLE_COUNT = 'sample_count'
 
-CONF_SENSORS = 'sensors'
 CONF_ATTRIBUTE = 'attribute'
+CONF_INVERT = 'invert'
 CONF_MAX_SAMPLES = 'max_samples'
 CONF_MIN_GRADIENT = 'min_gradient'
-CONF_INVERT = 'invert'
 CONF_SAMPLE_DURATION = 'sample_duration'
+CONF_SENSORS = 'sensors'
 
 SENSOR_SCHEMA = vol.Schema({
     vol.Required(CONF_ENTITY_ID): cv.entity_id,
     vol.Optional(CONF_ATTRIBUTE): cv.string,
     vol.Optional(CONF_DEVICE_CLASS): DEVICE_CLASSES_SCHEMA,
     vol.Optional(CONF_FRIENDLY_NAME): cv.string,
+    vol.Optional(CONF_INVERT, default=False): cv.boolean,
     vol.Optional(CONF_MAX_SAMPLES, default=2): cv.positive_int,
     vol.Optional(CONF_MIN_GRADIENT, default=0.0): vol.Coerce(float),
-    vol.Optional(CONF_INVERT, default=False): cv.boolean,
     vol.Optional(CONF_SAMPLE_DURATION, default=0): cv.positive_int,
 })
 
@@ -59,8 +56,7 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
 })
 
 
-# pylint: disable=unused-argument
-def setup_platform(hass, config, add_devices, discovery_info=None):
+def setup_platform(hass, config, add_entities, discovery_info=None):
     """Set up the trend sensors."""
     sensors = []
 
@@ -83,7 +79,7 @@ def setup_platform(hass, config, add_devices, discovery_info=None):
     if not sensors:
         _LOGGER.error("No sensors added")
         return False
-    add_devices(sensors)
+    add_entities(sensors)
     return True
 
 
@@ -129,11 +125,11 @@ class SensorTrend(BinarySensorDevice):
         return {
             ATTR_ENTITY_ID: self._entity_id,
             ATTR_FRIENDLY_NAME: self._name,
-            ATTR_INVERT: self._invert,
             ATTR_GRADIENT: self._gradient,
+            ATTR_INVERT: self._invert,
             ATTR_MIN_GRADIENT: self._min_gradient,
-            ATTR_SAMPLE_DURATION: self._sample_duration,
             ATTR_SAMPLE_COUNT: len(self.samples),
+            ATTR_SAMPLE_DURATION: self._sample_duration,
         }
 
     @property
@@ -141,8 +137,7 @@ class SensorTrend(BinarySensorDevice):
         """No polling needed."""
         return False
 
-    @asyncio.coroutine
-    def async_added_to_hass(self):
+    async def async_added_to_hass(self):
         """Complete device setup after being added to hass."""
         @callback
         def trend_sensor_state_listener(entity, old_state, new_state):
@@ -163,8 +158,7 @@ class SensorTrend(BinarySensorDevice):
             self.hass, self._entity_id,
             trend_sensor_state_listener)
 
-    @asyncio.coroutine
-    def async_update(self):
+    async def async_update(self):
         """Get the latest data and update the states."""
         # Remove outdated samples
         if self._sample_duration > 0:
@@ -176,7 +170,7 @@ class SensorTrend(BinarySensorDevice):
             return
 
         # Calculate gradient of linear trend
-        yield from self.hass.async_add_job(self._calculate_gradient)
+        await self.hass.async_add_job(self._calculate_gradient)
 
         # Update state
         self._state = (

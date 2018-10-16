@@ -1,11 +1,13 @@
 """The tests for the REST sensor platform."""
 import unittest
+from pytest import raises
 from unittest.mock import patch, Mock
 
 import requests
 from requests.exceptions import Timeout, MissingSchema, RequestException
 import requests_mock
 
+from homeassistant.exceptions import PlatformNotReady
 from homeassistant.setup import setup_component
 import homeassistant.components.sensor as sensor
 import homeassistant.components.sensor.rest as rest
@@ -19,7 +21,7 @@ class TestRestSensorSetup(unittest.TestCase):
     """Tests for setting up the REST sensor platform."""
 
     def setUp(self):
-        """Setup things to be run when tests are started."""
+        """Set up things to be run when tests are started."""
         self.hass = get_test_home_assistant()
 
     def tearDown(self):
@@ -45,83 +47,85 @@ class TestRestSensorSetup(unittest.TestCase):
            side_effect=requests.exceptions.ConnectionError())
     def test_setup_failed_connect(self, mock_req):
         """Test setup when connection error occurs."""
-        self.assertTrue(rest.setup_platform(self.hass, {
-            'platform': 'rest',
-            'resource': 'http://localhost',
-        }, lambda devices, update=True: None) is None)
+        with raises(PlatformNotReady):
+            rest.setup_platform(self.hass, {
+                'platform': 'rest',
+                'resource': 'http://localhost',
+            }, lambda devices, update=True: None)
 
     @patch('requests.Session.send', side_effect=Timeout())
     def test_setup_timeout(self, mock_req):
         """Test setup when connection timeout occurs."""
-        self.assertTrue(rest.setup_platform(self.hass, {
-            'platform': 'rest',
-            'resource': 'http://localhost',
-        }, lambda devices, update=True: None) is None)
+        with raises(PlatformNotReady):
+            rest.setup_platform(self.hass, {
+                'platform': 'rest',
+                'resource': 'http://localhost',
+            }, lambda devices, update=True: None)
 
     @requests_mock.Mocker()
     def test_setup_minimum(self, mock_req):
         """Test setup with minimum configuration."""
         mock_req.get('http://localhost', status_code=200)
-        self.assertTrue(setup_component(self.hass, 'sensor', {
-            'sensor': {
-                'platform': 'rest',
-                'resource': 'http://localhost'
-            }
-        }))
+        with assert_setup_component(1, 'sensor'):
+            self.assertTrue(setup_component(self.hass, 'sensor', {
+                'sensor': {
+                    'platform': 'rest',
+                    'resource': 'http://localhost'
+                }
+            }))
         self.assertEqual(2, mock_req.call_count)
-        assert_setup_component(1, 'switch')
 
     @requests_mock.Mocker()
     def test_setup_get(self, mock_req):
         """Test setup with valid configuration."""
         mock_req.get('http://localhost', status_code=200)
-        self.assertTrue(setup_component(self.hass, 'sensor', {
-            'sensor': {
-                'platform': 'rest',
-                'resource': 'http://localhost',
-                'method': 'GET',
-                'value_template': '{{ value_json.key }}',
-                'name': 'foo',
-                'unit_of_measurement': 'MB',
-                'verify_ssl': 'true',
-                'authentication': 'basic',
-                'username': 'my username',
-                'password': 'my password',
-                'headers': {'Accept': 'application/json'}
-            }
-        }))
+        with assert_setup_component(1, 'sensor'):
+            self.assertTrue(setup_component(self.hass, 'sensor', {
+                'sensor': {
+                    'platform': 'rest',
+                    'resource': 'http://localhost',
+                    'method': 'GET',
+                    'value_template': '{{ value_json.key }}',
+                    'name': 'foo',
+                    'unit_of_measurement': 'MB',
+                    'verify_ssl': 'true',
+                    'authentication': 'basic',
+                    'username': 'my username',
+                    'password': 'my password',
+                    'headers': {'Accept': 'application/json'}
+                }
+            }))
         self.assertEqual(2, mock_req.call_count)
-        assert_setup_component(1, 'sensor')
 
     @requests_mock.Mocker()
     def test_setup_post(self, mock_req):
         """Test setup with valid configuration."""
         mock_req.post('http://localhost', status_code=200)
-        self.assertTrue(setup_component(self.hass, 'sensor', {
-            'sensor': {
-                'platform': 'rest',
-                'resource': 'http://localhost',
-                'method': 'POST',
-                'value_template': '{{ value_json.key }}',
-                'payload': '{ "device": "toaster"}',
-                'name': 'foo',
-                'unit_of_measurement': 'MB',
-                'verify_ssl': 'true',
-                'authentication': 'basic',
-                'username': 'my username',
-                'password': 'my password',
-                'headers': {'Accept': 'application/json'}
-            }
-        }))
+        with assert_setup_component(1, 'sensor'):
+            self.assertTrue(setup_component(self.hass, 'sensor', {
+                'sensor': {
+                    'platform': 'rest',
+                    'resource': 'http://localhost',
+                    'method': 'POST',
+                    'value_template': '{{ value_json.key }}',
+                    'payload': '{ "device": "toaster"}',
+                    'name': 'foo',
+                    'unit_of_measurement': 'MB',
+                    'verify_ssl': 'true',
+                    'authentication': 'basic',
+                    'username': 'my username',
+                    'password': 'my password',
+                    'headers': {'Accept': 'application/json'}
+                }
+            }))
         self.assertEqual(2, mock_req.call_count)
-        assert_setup_component(1, 'sensor')
 
 
 class TestRestSensor(unittest.TestCase):
     """Tests for REST sensor platform."""
 
     def setUp(self):
-        """Setup things to be run when tests are started."""
+        """Set up things to be run when tests are started."""
         self.hass = get_test_home_assistant()
         self.initial_state = 'initial_state'
         self.rest = Mock('rest.RestData')
@@ -132,10 +136,12 @@ class TestRestSensor(unittest.TestCase):
         self.unit_of_measurement = 'MB'
         self.value_template = template('{{ value_json.key }}')
         self.value_template.hass = self.hass
+        self.force_update = False
 
         self.sensor = rest.RestSensor(
             self.hass, self.rest, self.name, self.unit_of_measurement,
-            self.value_template)
+            self.value_template, [], self.force_update
+        )
 
     def tearDown(self):
         """Stop everything that was started."""
@@ -153,6 +159,11 @@ class TestRestSensor(unittest.TestCase):
         """Test the unit of measurement."""
         self.assertEqual(
             self.unit_of_measurement, self.sensor.unit_of_measurement)
+
+    def test_force_update(self):
+        """Test the unit of measurement."""
+        self.assertEqual(
+            self.force_update, self.sensor.force_update)
 
     def test_state(self):
         """Test the initial state."""
@@ -181,18 +192,86 @@ class TestRestSensor(unittest.TestCase):
         self.rest.update = Mock('rest.RestData.update',
                                 side_effect=self.update_side_effect(
                                     'plain_state'))
-        self.sensor = rest.RestSensor(
-            self.hass, self.rest, self.name, self.unit_of_measurement, None)
+        self.sensor = rest.RestSensor(self.hass, self.rest, self.name,
+                                      self.unit_of_measurement, None, [],
+                                      self.force_update)
         self.sensor.update()
         self.assertEqual('plain_state', self.sensor.state)
         self.assertTrue(self.sensor.available)
+
+    def test_update_with_json_attrs(self):
+        """Test attributes get extracted from a JSON result."""
+        self.rest.update = Mock('rest.RestData.update',
+                                side_effect=self.update_side_effect(
+                                    '{ "key": "some_json_value" }'))
+        self.sensor = rest.RestSensor(self.hass, self.rest, self.name,
+                                      self.unit_of_measurement, None, ['key'],
+                                      self.force_update)
+        self.sensor.update()
+        self.assertEqual('some_json_value',
+                         self.sensor.device_state_attributes['key'])
+
+    @patch('homeassistant.components.sensor.rest._LOGGER')
+    def test_update_with_json_attrs_no_data(self, mock_logger):
+        """Test attributes when no JSON result fetched."""
+        self.rest.update = Mock('rest.RestData.update',
+                                side_effect=self.update_side_effect(None))
+        self.sensor = rest.RestSensor(self.hass, self.rest, self.name,
+                                      self.unit_of_measurement, None, ['key'],
+                                      self.force_update)
+        self.sensor.update()
+        self.assertEqual({}, self.sensor.device_state_attributes)
+        self.assertTrue(mock_logger.warning.called)
+
+    @patch('homeassistant.components.sensor.rest._LOGGER')
+    def test_update_with_json_attrs_not_dict(self, mock_logger):
+        """Test attributes get extracted from a JSON result."""
+        self.rest.update = Mock('rest.RestData.update',
+                                side_effect=self.update_side_effect(
+                                    '["list", "of", "things"]'))
+        self.sensor = rest.RestSensor(self.hass, self.rest, self.name,
+                                      self.unit_of_measurement, None, ['key'],
+                                      self.force_update)
+        self.sensor.update()
+        self.assertEqual({}, self.sensor.device_state_attributes)
+        self.assertTrue(mock_logger.warning.called)
+
+    @patch('homeassistant.components.sensor.rest._LOGGER')
+    def test_update_with_json_attrs_bad_JSON(self, mock_logger):
+        """Test attributes get extracted from a JSON result."""
+        self.rest.update = Mock('rest.RestData.update',
+                                side_effect=self.update_side_effect(
+                                    'This is text rather than JSON data.'))
+        self.sensor = rest.RestSensor(self.hass, self.rest, self.name,
+                                      self.unit_of_measurement, None, ['key'],
+                                      self.force_update)
+        self.sensor.update()
+        self.assertEqual({}, self.sensor.device_state_attributes)
+        self.assertTrue(mock_logger.warning.called)
+        self.assertTrue(mock_logger.debug.called)
+
+    def test_update_with_json_attrs_and_template(self):
+        """Test attributes get extracted from a JSON result."""
+        self.rest.update = Mock('rest.RestData.update',
+                                side_effect=self.update_side_effect(
+                                    '{ "key": "json_state_updated_value" }'))
+        self.sensor = rest.RestSensor(self.hass, self.rest, self.name,
+                                      self.unit_of_measurement,
+                                      self.value_template, ['key'],
+                                      self.force_update)
+        self.sensor.update()
+
+        self.assertEqual('json_state_updated_value', self.sensor.state)
+        self.assertEqual('json_state_updated_value',
+                         self.sensor.device_state_attributes['key'],
+                         self.force_update)
 
 
 class TestRestData(unittest.TestCase):
     """Tests for RestData."""
 
     def setUp(self):
-        """Setup things to be run when tests are started."""
+        """Set up things to be run when tests are started."""
         self.method = "GET"
         self.resource = "http://localhost"
         self.verify_ssl = True

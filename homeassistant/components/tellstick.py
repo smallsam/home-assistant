@@ -4,7 +4,6 @@ Tellstick Component.
 For more details about this component, please refer to the documentation at
 https://home-assistant.io/components/tellstick/
 """
-import asyncio
 import logging
 import threading
 
@@ -17,7 +16,7 @@ from homeassistant.const import (
 from homeassistant.helpers.entity import Entity
 import homeassistant.helpers.config_validation as cv
 
-REQUIREMENTS = ['tellcore-py==1.1.2', 'tellcore-net==0.1']
+REQUIREMENTS = ['tellcore-py==1.1.2', 'tellcore-net==0.4']
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -42,7 +41,8 @@ TELLCORE_REGISTRY = None
 CONFIG_SCHEMA = vol.Schema({
     DOMAIN: vol.Schema({
         vol.Inclusive(CONF_HOST, 'tellcore-net'): cv.string,
-        vol.Inclusive(CONF_PORT, 'tellcore-net'): cv.port,
+        vol.Inclusive(CONF_PORT, 'tellcore-net'):
+            vol.All(cv.ensure_list, [cv.port], vol.Length(min=2, max=2)),
         vol.Optional(CONF_SIGNAL_REPETITIONS,
                      default=DEFAULT_SIGNAL_REPETITIONS): vol.Coerce(int),
     }),
@@ -66,18 +66,19 @@ def _discover(hass, config, component_name, found_tellcore_devices):
 
 def setup(hass, config):
     """Set up the Tellstick component."""
-    from tellcore.constants import TELLSTICK_DIM
+    from tellcore.constants import (TELLSTICK_DIM, TELLSTICK_UP)
     from tellcore.telldus import AsyncioCallbackDispatcher
     from tellcore.telldus import TelldusCore
     from tellcorenet import TellCoreClient
 
     conf = config.get(DOMAIN, {})
     net_host = conf.get(CONF_HOST)
-    net_port = conf.get(CONF_PORT)
+    net_ports = conf.get(CONF_PORT)
 
     # Initialize remote tellcore client
-    if net_host and net_port:
-        net_client = TellCoreClient(net_host, net_port)
+    if net_host:
+        net_client = TellCoreClient(
+            host=net_host, port_client=net_ports[0], port_events=net_ports[1])
         net_client.start()
 
         def stop_tellcore_net(event):
@@ -100,15 +101,21 @@ def setup(hass, config):
     hass.data[DATA_TELLSTICK] = {device.id: device for
                                  device in tellcore_devices}
 
-    # Discover the switches
-    _discover(hass, config, 'switch',
-              [device.id for device in tellcore_devices
-               if not device.methods(TELLSTICK_DIM)])
-
     # Discover the lights
     _discover(hass, config, 'light',
               [device.id for device in tellcore_devices
                if device.methods(TELLSTICK_DIM)])
+
+    # Discover the cover
+    _discover(hass, config, 'cover',
+              [device.id for device in tellcore_devices
+               if device.methods(TELLSTICK_UP)])
+
+    # Discover the switches
+    _discover(hass, config, 'switch',
+              [device.id for device in tellcore_devices
+               if (not device.methods(TELLSTICK_UP) and
+                   not device.methods(TELLSTICK_DIM))])
 
     @callback
     def async_handle_callback(tellcore_id, tellcore_command,
@@ -150,8 +157,7 @@ class TellstickDevice(Entity):
         self._tellcore_device = tellcore_device
         self._name = tellcore_device.name
 
-    @asyncio.coroutine
-    def async_added_to_hass(self):
+    async def async_added_to_hass(self):
         """Register callbacks."""
         self.hass.helpers.dispatcher.async_dispatcher_connect(
             SIGNAL_TELLCORE_CALLBACK,

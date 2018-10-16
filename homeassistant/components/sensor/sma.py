@@ -12,13 +12,14 @@ import voluptuous as vol
 
 from homeassistant.components.sensor import PLATFORM_SCHEMA
 from homeassistant.const import (
-    EVENT_HOMEASSISTANT_STOP, CONF_HOST, CONF_PASSWORD, CONF_SCAN_INTERVAL)
+    EVENT_HOMEASSISTANT_STOP, CONF_HOST, CONF_PASSWORD, CONF_SCAN_INTERVAL,
+    CONF_SSL)
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.entity import Entity
 
-REQUIREMENTS = ['pysma==0.1.3']
+REQUIREMENTS = ['pysma==0.2']
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -49,6 +50,7 @@ def _check_sensor_schema(conf):
 
 PLATFORM_SCHEMA = vol.All(PLATFORM_SCHEMA.extend({
     vol.Required(CONF_HOST): str,
+    vol.Optional(CONF_SSL, default=False): cv.boolean,
     vol.Required(CONF_PASSWORD): str,
     vol.Optional(CONF_GROUP, default=GROUPS[0]): vol.In(GROUPS),
     vol.Required(CONF_SENSORS): vol.Schema({cv.slug: cv.ensure_list}),
@@ -61,8 +63,8 @@ PLATFORM_SCHEMA = vol.All(PLATFORM_SCHEMA.extend({
 }, extra=vol.PREVENT_EXTRA), _check_sensor_schema)
 
 
-@asyncio.coroutine
-def async_setup_platform(hass, config, async_add_devices, discovery_info=None):
+async def async_setup_platform(hass, config, async_add_entities,
+                               discovery_info=None):
     """Set up SMA WebConnect sensor."""
     import pysma
 
@@ -91,20 +93,22 @@ def async_setup_platform(hass, config, async_add_devices, discovery_info=None):
     sensor_defs = {name: val for name, val in sensor_defs.items()
                    if name in used_sensors}
 
-    async_add_devices(hass_sensors)
+    async_add_entities(hass_sensors)
 
     # Init the SMA interface
     session = async_get_clientsession(hass)
     grp = {GROUP_INSTALLER: pysma.GROUP_INSTALLER,
            GROUP_USER: pysma.GROUP_USER}[config[CONF_GROUP]]
-    sma = pysma.SMA(session, config[CONF_HOST], config[CONF_PASSWORD],
-                    group=grp)
+
+    url = "http{}://{}".format(
+        "s" if config[CONF_SSL] else "", config[CONF_HOST])
+
+    sma = pysma.SMA(session, url, config[CONF_PASSWORD], group=grp)
 
     # Ensure we logout on shutdown
-    @asyncio.coroutine
-    def async_close_session(event):
+    async def async_close_session(event):
         """Close the session."""
-        yield from sma.close_session()
+        await sma.close_session()
 
     hass.bus.async_listen(EVENT_HOMEASSISTANT_STOP, async_close_session)
 
@@ -114,15 +118,14 @@ def async_setup_platform(hass, config, async_add_devices, discovery_info=None):
 
     backoff = 0
 
-    @asyncio.coroutine
-    def async_sma(event):
+    async def async_sma(event):
         """Update all the SMA sensors."""
         nonlocal backoff
         if backoff > 1:
             backoff -= 1
             return
 
-        values = yield from sma.read(keys_to_query)
+        values = await sma.read(keys_to_query)
         if values is None:
             backoff = 3
             return
@@ -136,7 +139,7 @@ def async_setup_platform(hass, config, async_add_devices, discovery_info=None):
             if task:
                 tasks.append(task)
         if tasks:
-            yield from asyncio.wait(tasks, loop=hass.loop)
+            await asyncio.wait(tasks, loop=hass.loop)
 
     interval = config.get(CONF_SCAN_INTERVAL) or timedelta(seconds=5)
     async_track_time_interval(hass, async_sma, interval)
@@ -193,5 +196,4 @@ class SMAsensor(Entity):
             update = True
             self._state = new_state
 
-        return self.async_update_ha_state() if update else None \
-            # pylint: disable=protected-access
+        return self.async_update_ha_state() if update else None

@@ -4,20 +4,20 @@ Support for a generic MQTT vacuum.
 For more details about this platform, please refer to the documentation
 https://home-assistant.io/components/vacuum.mqtt/
 """
-import asyncio
 import logging
 
 import voluptuous as vol
 
-import homeassistant.components.mqtt as mqtt
-import homeassistant.helpers.config_validation as cv
+from homeassistant.components import mqtt
+from homeassistant.components.mqtt import MqttAvailability
 from homeassistant.components.vacuum import (
-    DEFAULT_ICON, SUPPORT_BATTERY, SUPPORT_CLEAN_SPOT, SUPPORT_FAN_SPEED,
+    SUPPORT_BATTERY, SUPPORT_CLEAN_SPOT, SUPPORT_FAN_SPEED,
     SUPPORT_LOCATE, SUPPORT_PAUSE, SUPPORT_RETURN_HOME, SUPPORT_SEND_COMMAND,
     SUPPORT_STATUS, SUPPORT_STOP, SUPPORT_TURN_OFF, SUPPORT_TURN_ON,
     VacuumDevice)
 from homeassistant.const import ATTR_SUPPORTED_FEATURES, CONF_NAME
 from homeassistant.core import callback
+import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.icon import icon_for_battery_level
 
 _LOGGER = logging.getLogger(__name__)
@@ -135,11 +135,11 @@ PLATFORM_SCHEMA = mqtt.MQTT_BASE_PLATFORM_SCHEMA.extend({
     vol.Optional(CONF_FAN_SPEED_LIST, default=[]):
         vol.All(cv.ensure_list, [cv.string]),
     vol.Optional(CONF_SEND_COMMAND_TOPIC): mqtt.valid_publish_topic,
-})
+}).extend(mqtt.MQTT_AVAILABILITY_SCHEMA.schema)
 
 
-@asyncio.coroutine
-def async_setup_platform(hass, config, async_add_devices, discovery_info=None):
+async def async_setup_platform(hass, config, async_add_entities,
+                               discovery_info=None):
     """Set up the vacuum."""
     name = config.get(CONF_NAME)
     supported_feature_strings = config.get(CONF_SUPPORTED_FEATURES)
@@ -187,7 +187,11 @@ def async_setup_platform(hass, config, async_add_devices, discovery_info=None):
 
     send_command_topic = config.get(CONF_SEND_COMMAND_TOPIC)
 
-    async_add_devices([
+    availability_topic = config.get(mqtt.CONF_AVAILABILITY_TOPIC)
+    payload_available = config.get(mqtt.CONF_PAYLOAD_AVAILABLE)
+    payload_not_available = config.get(mqtt.CONF_PAYLOAD_NOT_AVAILABLE)
+
+    async_add_entities([
         MqttVacuum(
             name, supported_features, qos, retain, command_topic,
             payload_turn_on, payload_turn_off, payload_return_to_base,
@@ -196,15 +200,15 @@ def async_setup_platform(hass, config, async_add_devices, discovery_info=None):
             charging_topic, charging_template, cleaning_topic,
             cleaning_template, docked_topic, docked_template, fan_speed_topic,
             fan_speed_template, set_fan_speed_topic, fan_speed_list,
-            send_command_topic
+            send_command_topic, availability_topic, payload_available,
+            payload_not_available
         ),
     ])
 
 
-class MqttVacuum(VacuumDevice):
+class MqttVacuum(MqttAvailability, VacuumDevice):
     """Representation of a MQTT-controlled vacuum."""
 
-    # pylint: disable=no-self-use
     def __init__(
             self, name, supported_features, qos, retain, command_topic,
             payload_turn_on, payload_turn_off, payload_return_to_base,
@@ -213,8 +217,12 @@ class MqttVacuum(VacuumDevice):
             charging_topic, charging_template, cleaning_topic,
             cleaning_template, docked_topic, docked_template, fan_speed_topic,
             fan_speed_template, set_fan_speed_topic, fan_speed_list,
-            send_command_topic):
+            send_command_topic, availability_topic, payload_available,
+            payload_not_available):
         """Initialize the vacuum."""
+        super().__init__(availability_topic, qos, payload_available,
+                         payload_not_available)
+
         self._name = name
         self._supported_features = supported_features
         self._qos = qos
@@ -255,12 +263,10 @@ class MqttVacuum(VacuumDevice):
         self._battery_level = 0
         self._fan_speed = 'unknown'
 
-    @asyncio.coroutine
-    def async_added_to_hass(self):
-        """Subscribe MQTT events.
+    async def async_added_to_hass(self):
+        """Subscribe MQTT events."""
+        await super().async_added_to_hass()
 
-        This method is a coroutine.
-        """
         @callback
         def message_received(topic, payload, qos):
             """Handle new MQTT message."""
@@ -323,18 +329,13 @@ class MqttVacuum(VacuumDevice):
                                            self._docked_topic,
                                            self._fan_speed_topic) if topic]
         for topic in set(topics_list):
-            yield from self.hass.components.mqtt.async_subscribe(
+            await self.hass.components.mqtt.async_subscribe(
                 topic, message_received, self._qos)
 
     @property
     def name(self):
         """Return the name of the vacuum."""
         return self._name
-
-    @property
-    def icon(self):
-        """Return the icon for the vacuum."""
-        return DEFAULT_ICON
 
     @property
     def should_poll(self):
@@ -391,8 +392,7 @@ class MqttVacuum(VacuumDevice):
         """Flag supported features."""
         return self._supported_features
 
-    @asyncio.coroutine
-    def async_turn_on(self, **kwargs):
+    async def async_turn_on(self, **kwargs):
         """Turn the vacuum on."""
         if self.supported_features & SUPPORT_TURN_ON == 0:
             return
@@ -402,8 +402,7 @@ class MqttVacuum(VacuumDevice):
         self._status = 'Cleaning'
         self.async_schedule_update_ha_state()
 
-    @asyncio.coroutine
-    def async_turn_off(self, **kwargs):
+    async def async_turn_off(self, **kwargs):
         """Turn the vacuum off."""
         if self.supported_features & SUPPORT_TURN_OFF == 0:
             return
@@ -413,8 +412,7 @@ class MqttVacuum(VacuumDevice):
         self._status = 'Turning Off'
         self.async_schedule_update_ha_state()
 
-    @asyncio.coroutine
-    def async_stop(self, **kwargs):
+    async def async_stop(self, **kwargs):
         """Stop the vacuum."""
         if self.supported_features & SUPPORT_STOP == 0:
             return
@@ -424,8 +422,7 @@ class MqttVacuum(VacuumDevice):
         self._status = 'Stopping the current task'
         self.async_schedule_update_ha_state()
 
-    @asyncio.coroutine
-    def async_clean_spot(self, **kwargs):
+    async def async_clean_spot(self, **kwargs):
         """Perform a spot clean-up."""
         if self.supported_features & SUPPORT_CLEAN_SPOT == 0:
             return
@@ -435,8 +432,7 @@ class MqttVacuum(VacuumDevice):
         self._status = "Cleaning spot"
         self.async_schedule_update_ha_state()
 
-    @asyncio.coroutine
-    def async_locate(self, **kwargs):
+    async def async_locate(self, **kwargs):
         """Locate the vacuum (usually by playing a song)."""
         if self.supported_features & SUPPORT_LOCATE == 0:
             return
@@ -446,8 +442,7 @@ class MqttVacuum(VacuumDevice):
         self._status = "Hi, I'm over here!"
         self.async_schedule_update_ha_state()
 
-    @asyncio.coroutine
-    def async_start_pause(self, **kwargs):
+    async def async_start_pause(self, **kwargs):
         """Start, pause or resume the cleaning task."""
         if self.supported_features & SUPPORT_PAUSE == 0:
             return
@@ -457,8 +452,7 @@ class MqttVacuum(VacuumDevice):
         self._status = 'Pausing/Resuming cleaning...'
         self.async_schedule_update_ha_state()
 
-    @asyncio.coroutine
-    def async_return_to_base(self, **kwargs):
+    async def async_return_to_base(self, **kwargs):
         """Tell the vacuum to return to its dock."""
         if self.supported_features & SUPPORT_RETURN_HOME == 0:
             return
@@ -469,8 +463,7 @@ class MqttVacuum(VacuumDevice):
         self._status = 'Returning home...'
         self.async_schedule_update_ha_state()
 
-    @asyncio.coroutine
-    def async_set_fan_speed(self, fan_speed, **kwargs):
+    async def async_set_fan_speed(self, fan_speed, **kwargs):
         """Set fan speed."""
         if self.supported_features & SUPPORT_FAN_SPEED == 0:
             return
@@ -483,8 +476,7 @@ class MqttVacuum(VacuumDevice):
         self._status = "Setting fan to {}...".format(fan_speed)
         self.async_schedule_update_ha_state()
 
-    @asyncio.coroutine
-    def async_send_command(self, command, params=None, **kwargs):
+    async def async_send_command(self, command, params=None, **kwargs):
         """Send a command to a vacuum cleaner."""
         if self.supported_features & SUPPORT_SEND_COMMAND == 0:
             return

@@ -4,13 +4,12 @@ This component provides HA sensor support for Amcrest IP cameras.
 For more details about this platform, please refer to the documentation at
 https://home-assistant.io/components/sensor.amcrest/
 """
-import asyncio
 from datetime import timedelta
 import logging
 
-from homeassistant.components.amcrest import SENSORS
+from homeassistant.components.amcrest import DATA_AMCREST, SENSORS
 from homeassistant.helpers.entity import Entity
-from homeassistant.const import STATE_UNKNOWN
+from homeassistant.const import CONF_NAME, CONF_SENSORS, STATE_UNKNOWN
 
 DEPENDENCIES = ['amcrest']
 
@@ -19,21 +18,22 @@ _LOGGER = logging.getLogger(__name__)
 SCAN_INTERVAL = timedelta(seconds=10)
 
 
-@asyncio.coroutine
-def async_setup_platform(hass, config, async_add_devices, discovery_info=None):
+async def async_setup_platform(hass, config, async_add_entities,
+                               discovery_info=None):
     """Set up a sensor for an Amcrest IP Camera."""
     if discovery_info is None:
         return
 
-    device = discovery_info['device']
-    name = discovery_info['name']
-    sensors = discovery_info['sensors']
+    device_name = discovery_info[CONF_NAME]
+    sensors = discovery_info[CONF_SENSORS]
+    amcrest = hass.data[DATA_AMCREST][device_name]
 
     amcrest_sensors = []
     for sensor_type in sensors:
-        amcrest_sensors.append(AmcrestSensor(name, device, sensor_type))
+        amcrest_sensors.append(
+            AmcrestSensor(amcrest.name, amcrest.device, sensor_type))
 
-    async_add_devices(amcrest_sensors, True)
+    async_add_entities(amcrest_sensors, True)
     return True
 
 

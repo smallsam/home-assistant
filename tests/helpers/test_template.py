@@ -3,6 +3,7 @@ import asyncio
 from datetime import datetime
 import unittest
 import random
+import math
 from unittest.mock import patch
 
 from homeassistant.components import group
@@ -26,7 +27,7 @@ class TestHelpersTemplate(unittest.TestCase):
 
     # pylint: disable=invalid-name
     def setUp(self):
-        """Setup the tests."""
+        """Set up the tests."""
         self.hass = get_test_home_assistant()
         self.hass.config.units = UnitSystem('custom', TEMP_CELSIUS,
                                             LENGTH_METERS, VOLUME_LITERS,
@@ -124,6 +125,97 @@ class TestHelpersTemplate(unittest.TestCase):
                 out,
                 template.Template('{{ %s | multiply(10) | round }}' % inp,
                                   self.hass).render())
+
+    def test_logarithm(self):
+        """Test logarithm."""
+        tests = [
+            (4, 2, '2.0'),
+            (1000, 10, '3.0'),
+            (math.e, '', '1.0'),
+            ('"invalid"', '_', 'invalid'),
+            (10, '"invalid"', '10.0'),
+        ]
+
+        for value, base, expected in tests:
+            self.assertEqual(
+                expected,
+                template.Template(
+                    '{{ %s | log(%s) | round(1) }}' % (value, base),
+                    self.hass).render())
+
+            self.assertEqual(
+                expected,
+                template.Template(
+                    '{{ log(%s, %s) | round(1) }}' % (value, base),
+                    self.hass).render())
+
+    def test_sine(self):
+        """Test sine."""
+        tests = [
+            (0, '0.0'),
+            (math.pi / 2, '1.0'),
+            (math.pi, '0.0'),
+            (math.pi * 1.5, '-1.0'),
+            (math.pi / 10, '0.309')
+        ]
+
+        for value, expected in tests:
+            self.assertEqual(
+                expected,
+                template.Template(
+                    '{{ %s | sin | round(3) }}' % value,
+                    self.hass).render())
+
+    def test_cos(self):
+        """Test cosine."""
+        tests = [
+            (0, '1.0'),
+            (math.pi / 2, '0.0'),
+            (math.pi, '-1.0'),
+            (math.pi * 1.5, '-0.0'),
+            (math.pi / 10, '0.951')
+        ]
+
+        for value, expected in tests:
+            self.assertEqual(
+                expected,
+                template.Template(
+                    '{{ %s | cos | round(3) }}' % value,
+                    self.hass).render())
+
+    def test_tan(self):
+        """Test tangent."""
+        tests = [
+            (0, '0.0'),
+            (math.pi, '-0.0'),
+            (math.pi / 180 * 45, '1.0'),
+            (math.pi / 180 * 90, '1.633123935319537e+16'),
+            (math.pi / 180 * 135, '-1.0')
+        ]
+
+        for value, expected in tests:
+            self.assertEqual(
+                expected,
+                template.Template(
+                    '{{ %s | tan | round(3) }}' % value,
+                    self.hass).render())
+
+    def test_sqrt(self):
+        """Test square root."""
+        tests = [
+            (0, '0.0'),
+            (1, '1.0'),
+            (2, '1.414'),
+            (10, '3.162'),
+            (100, '10.0'),
+        ]
+
+        for value, expected in tests:
+            self.assertEqual(
+                expected,
+                template.Template(
+                    '{{ %s | sqrt | round(3) }}' % value,
+                    self.hass).render())
 
     def test_strptime(self):
         """Test the parse timestamp method."""
@@ -255,6 +347,36 @@ class TestHelpersTemplate(unittest.TestCase):
             '127',
             template.Template('{{ hello }}', self.hass).render({'hello': 127}))
 
+    def test_passing_vars_as_list(self):
+        """Test passing variables as list."""
+        self.assertEqual(
+            "['foo', 'bar']",
+            template.render_complex(template.Template('{{ hello }}',
+                                    self.hass), {'hello': ['foo', 'bar']}))
+
+    def test_passing_vars_as_list_element(self):
+        """Test passing variables as list."""
+        self.assertEqual(
+            'bar',
+            template.render_complex(template.Template('{{ hello[1] }}',
+                                    self.hass),
+                                    {'hello': ['foo', 'bar']}))
+
+    def test_passing_vars_as_dict_element(self):
+        """Test passing variables as list."""
+        self.assertEqual(
+            'bar',
+            template.render_complex(template.Template('{{ hello.foo }}',
+                                    self.hass),
+                                    {'hello': {'foo': 'bar'}}))
+
+    def test_passing_vars_as_dict(self):
+        """Test passing variables as list."""
+        self.assertEqual(
+            "{'foo': 'bar'}",
+            template.render_complex(template.Template('{{ hello }}',
+                                    self.hass), {'hello': {'foo': 'bar'}}))
+
     def test_render_with_possible_json_value_with_valid_json(self):
         """Render with possible JSON value with valid JSON."""
         tpl = template.Template('{{ value_json.hello }}', self.hass)
@@ -343,6 +465,19 @@ class TestHelpersTemplate(unittest.TestCase):
                 """, self.hass)
         self.assertEqual('False', tpl.render())
 
+    def test_state_attr(self):
+        """Test state_attr method."""
+        self.hass.states.set('test.object', 'available', {'mode': 'on'})
+        tpl = template.Template("""
+{% if state_attr("test.object", "mode") == "on" %}yes{% else %}no{% endif %}
+                """, self.hass)
+        self.assertEqual('yes', tpl.render())
+
+        tpl = template.Template("""
+{{ state_attr("test.noobject", "mode") == None }}
+                """, self.hass)
+        self.assertEqual('True', tpl.render())
+
     def test_states_function(self):
         """Test using states as a function."""
         self.hass.states.set('test.object', 'available')
@@ -373,6 +508,89 @@ class TestHelpersTemplate(unittest.TestCase):
                 now.isoformat(),
                 template.Template('{{ utcnow().isoformat() }}',
                                   self.hass).render())
+
+    def test_regex_match(self):
+        """Test regex_match method."""
+        tpl = template.Template(r"""
+{{ '123-456-7890' | regex_match('(\\d{3})-(\\d{3})-(\\d{4})') }}
+                """, self.hass)
+        self.assertEqual('True', tpl.render())
+
+        tpl = template.Template("""
+{{ 'home assistant test' | regex_match('Home', True) }}
+                """, self.hass)
+        self.assertEqual('True', tpl.render())
+
+        tpl = template.Template("""
+        {{ 'Another home assistant test' | regex_match('home') }}
+                        """, self.hass)
+        self.assertEqual('False', tpl.render())
+
+    def test_regex_search(self):
+        """Test regex_search method."""
+        tpl = template.Template(r"""
+{{ '123-456-7890' | regex_search('(\\d{3})-(\\d{3})-(\\d{4})') }}
+                """, self.hass)
+        self.assertEqual('True', tpl.render())
+
+        tpl = template.Template("""
+{{ 'home assistant test' | regex_search('Home', True) }}
+                """, self.hass)
+        self.assertEqual('True', tpl.render())
+
+        tpl = template.Template("""
+        {{ 'Another home assistant test' | regex_search('home') }}
+                        """, self.hass)
+        self.assertEqual('True', tpl.render())
+
+    def test_regex_replace(self):
+        """Test regex_replace method."""
+        tpl = template.Template(r"""
+{{ 'Hello World' | regex_replace('(Hello\\s)',) }}
+                """, self.hass)
+        self.assertEqual('World', tpl.render())
+
+    def test_regex_findall_index(self):
+        """Test regex_findall_index method."""
+        tpl = template.Template("""
+{{ 'Flight from JFK to LHR' | regex_findall_index('([A-Z]{3})', 0) }}
+                """, self.hass)
+        self.assertEqual('JFK', tpl.render())
+
+        tpl = template.Template("""
+{{ 'Flight from JFK to LHR' | regex_findall_index('([A-Z]{3})', 1) }}
+                """, self.hass)
+        self.assertEqual('LHR', tpl.render())
+
+    def test_bitwise_and(self):
+        """Test bitwise_and method."""
+        tpl = template.Template("""
+{{ 8 | bitwise_and(8) }}
+                """, self.hass)
+        self.assertEqual(str(8 & 8), tpl.render())
+        tpl = template.Template("""
+{{ 10 | bitwise_and(2) }}
+                """, self.hass)
+        self.assertEqual(str(10 & 2), tpl.render())
+        tpl = template.Template("""
+{{ 8 | bitwise_and(2) }}
+                """, self.hass)
+        self.assertEqual(str(8 & 2), tpl.render())
+
+    def test_bitwise_or(self):
+        """Test bitwise_or method."""
+        tpl = template.Template("""
+{{ 8 | bitwise_or(8) }}
+                """, self.hass)
+        self.assertEqual(str(8 | 8), tpl.render())
+        tpl = template.Template("""
+{{ 10 | bitwise_or(2) }}
+                """, self.hass)
+        self.assertEqual(str(10 | 2), tpl.render())
+        tpl = template.Template("""
+{{ 8 | bitwise_or(2) }}
+                """, self.hass)
+        self.assertEqual(str(8 | 2), tpl.render())
 
     def test_distance_function_with_1_state(self):
         """Test distance function with 1 state."""
@@ -463,6 +681,32 @@ class TestHelpersTemplate(unittest.TestCase):
         self.assertEqual(
             'None',
             tpl.render())
+
+    def test_distance_function_with_2_entity_ids(self):
+        """Test distance function with 2 entity ids."""
+        self.hass.states.set('test.object', 'happy', {
+            'latitude': 32.87336,
+            'longitude': -117.22943,
+        })
+        self.hass.states.set('test.object_2', 'happy', {
+            'latitude': self.hass.config.latitude,
+            'longitude': self.hass.config.longitude,
+        })
+        tpl = template.Template(
+            '{{ distance("test.object", "test.object_2") | round }}',
+            self.hass)
+        self.assertEqual('187', tpl.render())
+
+    def test_distance_function_with_1_entity_1_coord(self):
+        """Test distance function with 1 entity_id and 1 coord."""
+        self.hass.states.set('test.object', 'happy', {
+            'latitude': self.hass.config.latitude,
+            'longitude': self.hass.config.longitude,
+        })
+        tpl = template.Template(
+            '{{ distance("test.object", "32.87336", "-117.22943") | round }}',
+            self.hass)
+        self.assertEqual('187', tpl.render())
 
     def test_closest_function_home_vs_domain(self):
         """Test closest function home vs domain."""
@@ -781,6 +1025,12 @@ is_state_attr('device_tracker.phone_2', 'battery', 40)
             template.extract_entities(
                 "{{ is_state(trigger.entity_id, 'off') }}",
                 {'trigger': {'entity_id': 'input_boolean.switch'}}))
+
+        self.assertEqual(
+            MATCH_ALL,
+            template.extract_entities(
+                "{{ is_state('media_player.' ~ where , 'playing') }}",
+                {'where': 'livingroom'}))
 
 
 @asyncio.coroutine
